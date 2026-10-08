@@ -28,4 +28,4 @@ Fork of [rtc-sctp](https://crates.io/crates/rtc-sctp) 0.21.0 (webrtc-rs, MIT OR 
 
 Tests for 2–4 are in `src/endpoint/endpoint_test.rs` and `src/queue/queue_test.rs` (search `zenoh-web patch`).
 
-Versioning: upstream version + `-zw.N` (`0.21.0-zw.2`); bump `N` for new fork fixes, reset it when rebasing on a new upstream.
+Versioning: upstream version + `-zw.N` (`0.21.0-zw.3`, no change of its own since zw.2: the forks share one version); bump `N` for new fork fixes, reset it when rebasing on a new upstream.

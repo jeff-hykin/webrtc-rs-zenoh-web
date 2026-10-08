@@ -604,14 +604,11 @@ impl<'a>
                             );
                             let mut stream = conn.stream(message.stream_id)?;
                             stream.close(now)?;
-
-                            self.ctx.event_outs.push_back(TaggedRTCEventInternal {
-                                now,
-                                event: RTCEventInternal::SCTPStreamClosed(
-                                    message.association_handle,
-                                    message.stream_id,
-                                ),
-                            });
+                            // zenoh-web patch: no SCTPStreamClosed here. It frees the stream id, and RFC 8831
+                            // §6.7 lets an id be reused only once both directions are reset; freed at once, a
+                            // channel opened right after this close got the same id, and the old stream's
+                            // reset then closed it (or the peer dropped its DCEP OPEN). The peer's reset of its
+                            // side arrives as AssociationLost, which closes the channel then.
                         }
                         Message::DataChannelThreshold(data_channel_threshold) => {
                             is_dcep_internal_control_message = true;

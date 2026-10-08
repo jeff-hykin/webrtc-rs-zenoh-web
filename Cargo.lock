@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "zenoh-web-rtc"
-version = "0.21.0-zw.2"
+version = "0.21.0-zw.3"
 dependencies = [
  "bytes",
  "hex",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "zenoh-web-rtc-datachannel"
-version = "0.21.0-zw.2"
+version = "0.21.0-zw.3"
 dependencies = [
  "bytes",
  "log",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "zenoh-web-rtc-sctp"
-version = "0.21.0-zw.2"
+version = "0.21.0-zw.3"
 dependencies = [
  "assert_matches",
  "bytes",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "zenoh-web-webrtc"
-version = "0.21.0-zw.2"
+version = "0.21.0-zw.3"
 dependencies = [
  "async-broadcast",
  "async-channel",

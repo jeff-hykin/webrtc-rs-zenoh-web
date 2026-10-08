@@ -16,4 +16,4 @@ get the patched SCTP and data channel code.
    not found": no video at all. Change: hand the track its sender's current parameters after each
    description is applied.
 
-Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.2`).
+Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.3`: no change of its own, it follows the rtc fork).
