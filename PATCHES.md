@@ -27,6 +27,8 @@ this repository).
   the negotiated header extension ids.
 - `0.21.0-zw.3`: a closed data channel's stream id is freed only once both directions are reset (a
   channel reopened at once no longer gets the dying stream).
+- `0.21.0-zw.4`: `close()` frees the connection (its transceivers held it in a cycle; its data
+  channels' `poll()` never ended).
 
 ## Publishing
 

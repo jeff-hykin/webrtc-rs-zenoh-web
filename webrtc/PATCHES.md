@@ -16,4 +16,11 @@ get the patched SCTP and data channel code.
    not found": no video at all. Change: hand the track its sender's current parameters after each
    description is applied.
 
-Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.3`: no change of its own, it follows the rtc fork).
+2. **`close()` frees the connection** (`src/peer_connection/mod.rs` `close`; marked `zenoh-web patch`).
+   Bug: `RtpTransceiverImpl` holds `Arc<PeerConnectionRef>` and `PeerConnectionRef` holds the
+   transceivers, so a connection that had negotiated a track was never freed (its handler, SCTP, DTLS
+   and media buffers: ~2 MB a browser in zenoh-gateway), and its data channels' `poll()` never ended,
+   their event senders living in the connection. Change: `close()` clears the transceivers and the
+   track and data channel event senders.
+
+Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.4`: patch 2).
