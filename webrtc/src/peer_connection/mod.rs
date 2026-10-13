@@ -1133,6 +1133,14 @@ impl PeerConnection for PeerConnectionImpl {
             }
         }
 
+        // Transceivers, senders and receivers hold this connection's `inner` (and `inner` holds them), and every data
+        // channel's `poll` waits on a sender kept here: drop them, or a closed connection (its handler, the
+        // application's state, the SCTP and media buffers) is never freed and its channels' `poll` never ends.
+        self.inner.rtp_transceivers.lock().await.clear();
+        self.inner.track_remote_events_tx.lock().await.clear();
+        self.inner.track_local_events_tx.lock().await.clear();
+        self.inner.data_channel_events_tx.lock().await.clear();
+
         Ok(())
     }
 
