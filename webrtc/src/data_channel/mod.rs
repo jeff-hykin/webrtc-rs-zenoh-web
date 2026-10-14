@@ -328,20 +328,21 @@ impl DataChannelImpl {
 
 impl Drop for DataChannelImpl {
     fn drop(&mut self) {
-        if let Some(mut data_channels) = self.inner.data_channel_events_tx.try_lock() {
-            data_channels.remove(&self.id);
-        } else {
-            // zenoh-web patch: the map is busy (the driver delivering an event, say): remove the
-            // sender once it is free rather than leave it behind for the life of the connection.
-            let inner = Arc::clone(&self.inner);
-            let id = self.id;
-            self.inner
-                .runtime
-                .spawn(Box::pin(async move {
-                    inner.data_channel_events_tx.lock().await.remove(&id);
-                }))
-                .detach();
-        }
+        // zenoh-web patch: remove this channel's event sender, but only while it is still this channel's: SCTP reuses a
+        // closed channel's stream id, and removing by id alone took a newer channel's sender with it (its events were
+        // then dropped as "Failed to get data_channel"). Deferred so it runs once this channel's receiver is gone: an
+        // entry whose receivers are all dropped is this (or an older) channel's, never a live one's.
+        let inner = Arc::clone(&self.inner);
+        let id = self.id;
+        self.inner
+            .runtime
+            .spawn(Box::pin(async move {
+                let mut data_channels = inner.data_channel_events_tx.lock().await;
+                if data_channels.get(&id).is_some_and(|sender| sender.is_closed()) {
+                    data_channels.remove(&id);
+                }
+            }))
+            .detach();
     }
 }
 
@@ -819,12 +820,44 @@ mod tests {
             let dc = DataChannelImpl::new(channel_id, inner.clone(), evt_rx);
             drop(dc);
 
-            assert!(
-                !inner
+            for _ in 0..100 {
+                if !inner
                     .data_channel_events_tx
                     .lock()
                     .await
                     .contains_key(&channel_id)
+                {
+                    return;
+                }
+                inner.runtime.sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the sender must be removed once the channel is dropped");
+        }));
+    }
+
+    #[test]
+    fn drop_leaves_a_newer_channel_with_the_same_id_alone() {
+        use crate::peer_connection::new_test_peer_connection;
+        use crate::runtime::{channel, default_runtime};
+
+        let rt = default_runtime().expect("test requires a runtime feature");
+        rt.block_on(Box::pin(async {
+            let (inner, _driver_event_rx) = new_test_peer_connection().await;
+
+            // SCTP reuses a closed channel's stream id: the old channel is dropped after a new one took its id
+            let channel_id = 0;
+            let (_old_tx, old_rx) = channel::<DataChannelEvent>(1);
+            let old = DataChannelImpl::new(channel_id, inner.clone(), old_rx);
+            let (new_tx, new_rx) = channel::<DataChannelEvent>(1);
+            let _new = DataChannelImpl::new(channel_id, inner.clone(), new_rx);
+            inner.data_channel_events_tx.lock().await.insert(channel_id, new_tx.clone());
+            drop(old);
+            inner.runtime.sleep(Duration::from_millis(100)).await;
+
+            let data_channels = inner.data_channel_events_tx.lock().await;
+            assert!(
+                data_channels.get(&channel_id).is_some_and(|sender| sender.same_channel(&new_tx)),
+                "the newer channel's sender must stay"
             );
         }));
     }

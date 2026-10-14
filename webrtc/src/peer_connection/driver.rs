@@ -1630,12 +1630,12 @@ where
             Ok(()) => {
                 if closes {
                     // zenoh-web patch: the channel's last event is queued for it; nothing more
-                    // will come, so drop its sender (its `poll` ends once it has read the close).
-                    self.inner
-                        .data_channel_events_tx
-                        .lock()
-                        .await
-                        .remove(&channel_id);
+                    // will come, so drop its sender (its `poll` ends once it has read the close),
+                    // unless the id already belongs to a newer channel (SCTP reuses stream ids).
+                    let mut data_channels = self.inner.data_channel_events_tx.lock().await;
+                    if data_channels.get(&channel_id).is_some_and(|sender| sender.same_channel(&evt_tx)) {
+                        data_channels.remove(&channel_id);
+                    }
                 }
             }
             Err(TrySendError::Full(event)) => {
@@ -1648,8 +1648,13 @@ where
                     .store(true, Ordering::Release);
             }
             Err(TrySendError::Disconnected(_)) => {
-                // The application dropped its `DataChannel`; there is nobody to deliver to.
+                // The application dropped its `DataChannel`; there is nobody to deliver to, and
+                // (zenoh-web patch) its sender goes too, if the id isn't a newer channel's yet.
                 debug!("data channel {} has no live receiver", channel_id);
+                let mut data_channels = self.inner.data_channel_events_tx.lock().await;
+                if data_channels.get(&channel_id).is_some_and(|sender| sender.same_channel(&evt_tx)) {
+                    data_channels.remove(&channel_id);
+                }
             }
         }
     }
@@ -1677,7 +1682,7 @@ where
                 match evt_tx.try_send(event) {
                     Ok(()) => {
                         if closes {
-                            closed.push(*channel_id);
+                            closed.push((*channel_id, evt_tx.clone()));
                         }
                     }
                     Err(TrySendError::Full(event)) => {
@@ -1695,8 +1700,10 @@ where
         // zenoh-web patch: as in `deliver_data_channel_event`, a channel handed its close has no sender left
         if !closed.is_empty() {
             let mut data_channels = self.inner.data_channel_events_tx.lock().await;
-            for channel_id in closed {
-                data_channels.remove(&channel_id);
+            for (channel_id, sender) in closed {
+                if data_channels.get(&channel_id).is_some_and(|current| current.same_channel(&sender)) {
+                    data_channels.remove(&channel_id);
+                }
             }
         }
 

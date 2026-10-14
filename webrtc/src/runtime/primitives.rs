@@ -251,6 +251,11 @@ impl<T> Sender<T> {
     pub fn is_closed(&self) -> bool {
         self.0.is_closed()
     }
+
+    /// Whether `other` sends into the same channel.
+    pub fn same_channel(&self, other: &Self) -> bool {
+        self.0.same_channel(&other.0)
+    }
 }
 
 /// Receiving half of a bounded channel.
