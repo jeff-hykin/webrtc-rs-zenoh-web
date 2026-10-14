@@ -339,7 +339,15 @@ impl<A: ToSocketAddrs> PeerConnectionBuilder<A> {
     /// and re-resolved on every bind (see [`with_udp_addrs`](Self::with_udp_addrs)), so they live
     /// as long as the connection. Owned addresses — `String`, `SocketAddr`, `(String, u16)`,
     /// `&'static str` — all qualify; a `&str` borrowed from a local does not, so pass it owned.
-    pub async fn build(mut self) -> Result<impl PeerConnection>
+    pub async fn build(self) -> Result<impl PeerConnection>
+    where
+        A: Send + 'static,
+    {
+        self.build_impl().await
+    }
+
+    /// `build`, naming the concrete type (tests reach its shared state through it).
+    pub(crate) async fn build_impl(mut self) -> Result<PeerConnectionImpl>
     where
         A: Send + 'static,
     {
@@ -1678,12 +1686,14 @@ mod virtual_clock_tests {
 
     /// Records the ICE connection states a peer reports, so a test can assert a transition
     /// without polling internal state.
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     struct StateRecorder {
         ice: StdMutex<Vec<RTCIceConnectionState>>,
         /// Locally gathered candidates not yet handed to the peer.
         pending_candidates: StdMutex<Vec<RTCIceCandidateInit>>,
         conn: StdMutex<Vec<RTCPeerConnectionState>>,
+        /// Data channels the peer opened, kept alive as an application would.
+        data_channels: StdMutex<Vec<Arc<dyn DataChannel>>>,
     }
 
     impl StateRecorder {
@@ -1721,6 +1731,13 @@ mod virtual_clock_tests {
             self.conn.lock().expect("recorder poisoned").push(state);
         }
 
+        async fn on_data_channel(&self, data_channel: Arc<dyn DataChannel>) {
+            self.data_channels
+                .lock()
+                .expect("recorder poisoned")
+                .push(data_channel);
+        }
+
         async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
             if let Ok(init) = event.candidate.to_json() {
                 self.pending_candidates
@@ -1749,6 +1766,7 @@ mod virtual_clock_tests {
 
     struct Peer {
         pc: Box<dyn PeerConnection>,
+        inner: Arc<PeerConnectionRef>,
         rt: Arc<MockRuntime>,
         rec: Arc<StateRecorder>,
     }
@@ -1777,10 +1795,11 @@ mod virtual_clock_tests {
             .with_runtime(Arc::clone(&rt) as Arc<dyn Runtime>)
             .with_handler(Arc::clone(&rec) as Arc<dyn PeerConnectionEventHandler>)
             .with_udp_addrs(vec!["127.0.0.1:0"])
-            .build()
+            .build_impl()
             .await
             .expect("a peer connection builds on the mock runtime");
         Peer {
+            inner: Arc::clone(&pc.inner),
             pc: Box::new(pc),
             rt,
             rec,
@@ -1892,6 +1911,68 @@ mod virtual_clock_tests {
             "a virtual-clock test must not spend real time: took {:?}",
             wall_clock_start.elapsed()
         );
+    }
+
+    /// zenoh-web patch: data channels opened and closed over a connection's life leave nothing
+    /// behind on either side: not the event sender (the driver drops it once it has handed the
+    /// channel its close, even while the application still holds the channel) and not the
+    /// channel's stats.
+    #[test]
+    fn closed_data_channels_leave_no_senders_or_stats() {
+        let network = Arc::new(MockUDPNetwork::new());
+        let driver = MockRuntime::new();
+
+        driver.block_on(Box::pin(async {
+            let (offerer, answerer) = connect_pair(&network).await;
+            for _ in 0..400 {
+                if offerer.rec.saw_conn(RTCPeerConnectionState::Connected)
+                    && answerer.rec.saw_conn(RTCPeerConnectionState::Connected)
+                {
+                    break;
+                }
+                advance_both(&offerer.rt, &answerer.rt, Duration::from_millis(25));
+            }
+            assert!(offerer.rec.saw_conn(RTCPeerConnectionState::Connected));
+
+            let rounds = 10;
+            let mut kept = vec![];
+            for round in 0..rounds {
+                let dc = offerer
+                    .pc
+                    .create_data_channel(&format!("dc{round}"), None)
+                    .await
+                    .expect("create data channel");
+                for _ in 0..200 {
+                    if answerer.rec.data_channels.lock().unwrap().len() > round + 1 {
+                        break;
+                    }
+                    advance_both(&offerer.rt, &answerer.rt, Duration::from_millis(10));
+                }
+                assert_eq!(
+                    answerer.rec.data_channels.lock().unwrap().len(),
+                    round + 2,
+                    "round {round}: the answerer must see the channel open"
+                );
+                dc.close().await.expect("close");
+                kept.push(dc);
+                for _ in 0..50 {
+                    advance_both(&offerer.rt, &answerer.rt, Duration::from_millis(10));
+                }
+            }
+
+            for (side, peer) in [("offerer", &offerer), ("answerer", &answerer)] {
+                let senders = peer.inner.data_channel_events_tx.lock().await.len();
+                assert_eq!(senders, 1, "{side}: only the open probe channel may keep a sender");
+                let stats = peer
+                    .pc
+                    .get_stats(peer.rt.now(), StatsSelector::None)
+                    .await
+                    .data_channels()
+                    .count();
+                assert!(stats <= 1, "{side}: closed channels must leave no stats, {stats} left");
+            }
+            drop(kept);
+        }));
     }
 
     /// **The headline claim.** ICE consent freshness (RFC 7675) fails when a peer stops

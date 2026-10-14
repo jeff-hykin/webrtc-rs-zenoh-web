@@ -1625,8 +1625,19 @@ where
         };
 
         // overflow: retained — `Full` hands the event back and it is kept, not dropped.
+        let closes = matches!(event, DataChannelEvent::OnClose);
         match evt_tx.try_send(event) {
-            Ok(()) => {}
+            Ok(()) => {
+                if closes {
+                    // zenoh-web patch: the channel's last event is queued for it; nothing more
+                    // will come, so drop its sender (its `poll` ends once it has read the close).
+                    self.inner
+                        .data_channel_events_tx
+                        .lock()
+                        .await
+                        .remove(&channel_id);
+                }
+            }
             Err(TrySendError::Full(event)) => {
                 self.pending_data_channel_events
                     .entry(channel_id)
@@ -1652,6 +1663,7 @@ where
         let senders: HashMap<RTCDataChannelId, Sender<DataChannelEvent>> =
             self.inner.data_channel_events_tx.lock().await.clone();
 
+        let mut closed = vec![];
         for (channel_id, pending) in self.pending_data_channel_events.iter_mut() {
             let Some(evt_tx) = senders.get(channel_id) else {
                 // The channel is gone; nothing can be delivered to it.
@@ -1659,10 +1671,15 @@ where
                 continue;
             };
             while let Some(event) = pending.pop_front() {
+                let closes = matches!(event, DataChannelEvent::OnClose);
                 // overflow: retained — on `Full` it goes back on the front and delivery
                 // stops for this channel, so order holds.
                 match evt_tx.try_send(event) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if closes {
+                            closed.push(*channel_id);
+                        }
+                    }
                     Err(TrySendError::Full(event)) => {
                         pending.push_front(event);
                         break;
@@ -1672,6 +1689,14 @@ where
                         break;
                     }
                 }
+            }
+        }
+
+        // zenoh-web patch: as in `deliver_data_channel_event`, a channel handed its close has no sender left
+        if !closed.is_empty() {
+            let mut data_channels = self.inner.data_channel_events_tx.lock().await;
+            for channel_id in closed {
+                data_channels.remove(&channel_id);
             }
         }
 

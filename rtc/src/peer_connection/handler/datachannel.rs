@@ -453,6 +453,8 @@ impl<'a>
                             ),
                         });
                     }
+                    // zenoh-web patch: the channel is gone, and so are its stats
+                    self.stats.data_channels.remove(&channel_id);
                 }
             }
 
@@ -1201,5 +1203,60 @@ mod tests {
                 .any(|e| matches!(e, DataChannelEvent::Message(_))),
             "a buffered message must never be delivered after the timeout"
         );
+    }
+
+    /// zenoh-web patch: a channel's stats entry goes when the channel does. Over a connection's
+    /// life channels open and close; each one used to leave its accumulator behind.
+    #[test]
+    fn a_closed_channel_leaves_no_stats_behind() {
+        let now = Instant::now();
+        let mut ctx = DataChannelHandlerContext::new(now);
+        let mut data_channels = DataChannelRegistry::new();
+        let mut stats = RTCStatsAccumulator::new();
+
+        for round in 0..20u16 {
+            let stream_id = 1 + 2 * (round % 3);
+            let handle = data_channels.insert(negotiated_channel(stream_id));
+            let mut handler = DataChannelHandler::new(
+                &mut ctx,
+                &mut data_channels,
+                &mut stats,
+                None,
+                RTCDtlsRole::Server,
+                None,
+            );
+            handler
+                .handle_event(TaggedRTCEventInternal {
+                    now,
+                    event: RTCEventInternal::SCTPHandshakeComplete(0),
+                })
+                .unwrap();
+            handler
+                .handle_write(TaggedRTCMessageInternal {
+                    now,
+                    transport: TransportContext::default(),
+                    message: RTCMessageInternal::Dtls(DTLSMessage::DataChannel(ApplicationMessage {
+                        data_channel_id: handle,
+                        data_channel_event: DataChannelEvent::Message(RTCDataChannelMessage {
+                            is_string: true,
+                            data: BytesMut::from(&b"hi"[..]),
+                        }),
+                    })),
+                })
+                .unwrap();
+            assert!(handler.stats.data_channels.contains_key(&handle), "precondition: the open channel has stats");
+
+            handler
+                .handle_event(TaggedRTCEventInternal {
+                    now,
+                    event: RTCEventInternal::SCTPStreamClosed(0, stream_id),
+                })
+                .unwrap();
+            drop(handler);
+            assert!(!data_channels.contains(&handle), "round {round}: the channel must be gone");
+        }
+
+        assert!(stats.data_channels.is_empty(), "closed channels must leave no stats: {} left", stats.data_channels.len());
+        assert_eq!(stats.peer_connection.data_channels_closed, 20, "each close is still counted");
     }
 }

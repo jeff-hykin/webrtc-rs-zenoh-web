@@ -2514,6 +2514,29 @@ mod tests {
         }
     }
 
+    /// zenoh-web patch: a channel closed before SCTP was up is never dialed, so no stream close
+    /// would ever free it; closing it must free it at once and say so.
+    #[test]
+    fn a_channel_closed_before_it_was_dialed_is_freed() {
+        let mut pc = RTCPeerConnectionBuilder::new()
+            .build(Instant::now())
+            .unwrap();
+        for _ in 0..10 {
+            let id = pc.create_data_channel("early", None).unwrap().id();
+            pc.data_channel(id).unwrap().close().unwrap();
+            assert!(pc.data_channel(id).is_none(), "the closed channel must be gone");
+            assert!(
+                pc.pipeline_context.event_outs.iter().any(|event| matches!(
+                    event,
+                    RTCPeerConnectionEvent::OnDataChannel(crate::peer_connection::event::RTCDataChannelEvent::OnClose(closed)) if *closed == id
+                )),
+                "closing must fire OnClose"
+            );
+        }
+        assert!(pc.data_channels.is_empty());
+        assert!(pc.pipeline_context.stats.data_channels.is_empty());
+    }
+
     // The graph the spec exposes: `pc.sctp` is the only way in, and the rest is walked.
     #[test]
     fn sctp_is_none_until_sctp_is_negotiated() {

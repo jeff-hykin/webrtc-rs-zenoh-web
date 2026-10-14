@@ -23,4 +23,12 @@ get the patched SCTP and data channel code.
    their event senders living in the connection. Change: `close()` clears the transceivers and the
    track and data channel event senders.
 
+3. **A closed data channel's event sender is freed** (`src/peer_connection/driver.rs`
+   `deliver_data_channel_event` / `flush_pending_data_channel_events`, `src/data_channel/mod.rs`
+   `Drop`; marked `zenoh-web patch`). Bug: the sender was removed only by the channel's `Drop`, and only
+   if `try_lock` got the map, so a channel dropped while the driver held it, or one the application
+   kept, stayed in the map for the life of the connection. Change: the driver drops the sender once it
+   has handed the channel its `OnClose` (its `poll` then ends after the close); `Drop` falls back to a
+   task when the map is busy.
+
 Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.4`: patch 2).

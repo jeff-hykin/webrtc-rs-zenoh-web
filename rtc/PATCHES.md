@@ -13,7 +13,12 @@ Fork of [rtc](https://crates.io/crates/rtc) 0.21.0 (webrtc-rs, MIT OR Apache-2.0
    stream id at once, while RFC 8831 §6.7 allows reuse only after both directions are reset; a channel opened
    right after the close got the same id, and the old stream's reset then closed it (or the peer dropped its
    DCEP OPEN). Change: the local close no longer reports the stream closed; the peer's reset of its side does.
-3. **Dependencies point at the forks**: `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
+3. **A closed data channel leaves nothing behind** (`src/peer_connection/handler/datachannel.rs`,
+   `src/data_channel/mod.rs` `close`, `src/data_channel/registry.rs` `remove`; marked `zenoh-web patch`).
+   Bugs: a channel's stats accumulator stayed after it closed, and a channel closed before SCTP was up
+   (never dialed, so no stream would ever close) stayed registered. Change: the stream's close removes
+   the stats; closing an undialed channel removes it, its stats, and fires `OnClose`.
+4. **Dependencies point at the forks**: `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
    `zenoh-web-rtc-datachannel` (which uses the same SCTP fork, so their types match).
 
 Manifest: dev-dependencies, examples and tests removed (not vendored).

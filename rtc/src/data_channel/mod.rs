@@ -36,6 +36,7 @@
 //! * [RFC 8832 - WebRTC Data Channel Establishment Protocol](https://datatracker.ietf.org/doc/html/rfc8832)
 
 use crate::peer_connection::RTCPeerConnection;
+use crate::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent};
 use crate::peer_connection::message::{RTCMessage, TaggedRTCMessage};
 use bytes::BytesMut;
 use sansio::Protocol;
@@ -404,6 +405,19 @@ impl RTCDataChannel<'_> {
     pub fn close(&mut self) -> Result<()> {
         if let Some(dc) = self.peer_connection.data_channels.get_mut(&self.id) {
             if dc.ready_state == RTCDataChannelState::Closed {
+                return Ok(());
+            }
+            if dc.data_channel.is_none() {
+                // zenoh-web patch: never dialed (closed before SCTP was up), so no stream will
+                // close to free it: free it now, and say it closed.
+                self.peer_connection.data_channels.remove(&self.id);
+                let pipeline_context = &mut self.peer_connection.pipeline_context;
+                pipeline_context.stats.data_channels.remove(&self.id);
+                pipeline_context
+                    .event_outs
+                    .push_back(RTCPeerConnectionEvent::OnDataChannel(
+                        RTCDataChannelEvent::OnClose(self.id),
+                    ));
                 return Ok(());
             }
             dc.ready_state = RTCDataChannelState::Closing;

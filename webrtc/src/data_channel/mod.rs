@@ -330,6 +330,17 @@ impl Drop for DataChannelImpl {
     fn drop(&mut self) {
         if let Some(mut data_channels) = self.inner.data_channel_events_tx.try_lock() {
             data_channels.remove(&self.id);
+        } else {
+            // zenoh-web patch: the map is busy (the driver delivering an event, say): remove the
+            // sender once it is free rather than leave it behind for the life of the connection.
+            let inner = Arc::clone(&self.inner);
+            let id = self.id;
+            self.inner
+                .runtime
+                .spawn(Box::pin(async move {
+                    inner.data_channel_events_tx.lock().await.remove(&id);
+                }))
+                .detach();
         }
     }
 }
@@ -744,6 +755,41 @@ mod tests {
             "the DataChannel::try_send_text default must delegate to send_text()"
         );
         assert_eq!(dc.sends.load(Ordering::Relaxed), 0);
+    }
+
+    /// zenoh-web patch: dropped while the map is busy (the driver delivering an event), the
+    /// channel's sender must still go, not stay for the life of the connection.
+    #[test]
+    fn drop_removes_event_sender_while_the_map_is_locked() {
+        use crate::peer_connection::new_test_peer_connection;
+        use crate::runtime::{channel, default_runtime};
+
+        let rt = default_runtime().expect("test requires a runtime feature");
+        rt.block_on(Box::pin(async {
+            let (inner, _driver_event_rx) = new_test_peer_connection().await;
+
+            let channel_id = 0;
+            let (evt_tx, evt_rx) = channel::<DataChannelEvent>(1);
+            let dc = DataChannelImpl::new(channel_id, inner.clone(), evt_rx);
+            {
+                let mut data_channels = inner.data_channel_events_tx.lock().await;
+                data_channels.insert(channel_id, evt_tx);
+                drop(dc);
+            }
+
+            for _ in 0..100 {
+                if !inner
+                    .data_channel_events_tx
+                    .lock()
+                    .await
+                    .contains_key(&channel_id)
+                {
+                    return;
+                }
+                inner.runtime.sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the sender must be removed once the map is free");
+        }));
     }
 
     #[test]
