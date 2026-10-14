@@ -280,6 +280,23 @@ impl RtpTransceiverImpl {
         }
     }
 
+    /// zenoh-web patch: the core removed this transceiver (stopped, its m-line rejected): unbind
+    /// its sender's track and drop the event senders of both its tracks, so the tracks' `poll`
+    /// end and nothing of it stays in the connection.
+    pub(crate) async fn release(&self) {
+        self.set_sender(None).await;
+        if let Some(receiver) = self.receiver.lock().await.take() {
+            let track_id = receiver.track().track_id().await;
+            let mut track_remotes = self.inner.track_remote_events_tx.lock().await;
+            if track_remotes
+                .get(&track_id)
+                .is_some_and(|(_, track)| Arc::ptr_eq(track, receiver.track()))
+            {
+                track_remotes.remove(&track_id);
+            }
+        }
+    }
+
     pub(crate) async fn set_receiver(&self, rtp_receiver: Option<Arc<dyn RtpReceiver>>) {
         let mut receiver = self.receiver.lock().await;
         *receiver = rtp_receiver;

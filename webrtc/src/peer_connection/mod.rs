@@ -1046,6 +1046,30 @@ impl PeerConnectionImpl {
     }
     /// zenoh-web patch: after a description is applied, every bound track gets its sender's
     /// negotiated parameters (header extension ids); see `TrackLocal::update_parameters`.
+    /// zenoh-web patch: drops (and releases) the transceivers the core has removed. Run after
+    /// every applied description, where the core removes stopped transceivers whose m-line the
+    /// completed negotiation rejected.
+    async fn prune_transceivers(&self) {
+        let current: HashSet<RTCRtpTransceiverId> = {
+            let core = self.inner.core.lock().await;
+            core.get_transceivers().collect()
+        };
+        let removed: Vec<Arc<RtpTransceiverImpl>> = {
+            let mut rtp_transceivers = self.inner.rtp_transceivers.lock().await;
+            let gone: Vec<_> = rtp_transceivers
+                .keys()
+                .filter(|id| !current.contains(id))
+                .copied()
+                .collect();
+            gone.iter()
+                .filter_map(|id| rtp_transceivers.remove(id))
+                .collect()
+        };
+        for transceiver in removed {
+            transceiver.release().await;
+        }
+    }
+
     async fn refresh_track_parameters(&self) {
         let transceivers: Vec<_> = self.inner.rtp_transceivers.lock().await.values().cloned().collect();
         for transceiver in transceivers {
@@ -1178,6 +1202,7 @@ impl PeerConnection for PeerConnectionImpl {
             let mut core = self.inner.core.lock().await;
             core.set_local_description(self.inner.runtime.now(), desc)?;
         }
+        self.prune_transceivers().await;
         self.refresh_track_parameters().await;
 
         // Wake the driver with MessageInner::IceGathering. Without this
@@ -1226,6 +1251,7 @@ impl PeerConnection for PeerConnectionImpl {
 
             core.set_remote_description(self.inner.runtime.now(), desc)?;
         }
+        self.prune_transceivers().await;
         self.refresh_track_parameters().await;
         // Wake the driver so it re-polls its timeout. When both local and remote
         // descriptions are set, set_remote_description triggers start_transports
@@ -1375,14 +1401,14 @@ impl PeerConnection for PeerConnectionImpl {
 
     /// Get the list of rtp transceiver
     async fn get_transceivers(&self) -> Vec<Arc<dyn RtpTransceiver>> {
+        // zenoh-web patch: removed ones are released, not just forgotten
+        self.prune_transceivers().await;
         let current_transceiver_ids: HashSet<RTCRtpTransceiverId> = {
             let core = self.inner.core.lock().await;
             core.get_transceivers().collect::<HashSet<_>>()
         };
 
         let mut rtp_transceivers = self.inner.rtp_transceivers.lock().await;
-        // only keep rtp_transceiver in current_transceiver_ids
-        rtp_transceivers.retain(|id, _| current_transceiver_ids.contains(id));
         for id in current_transceiver_ids {
             rtp_transceivers
                 .entry(id)
@@ -1972,6 +1998,105 @@ mod virtual_clock_tests {
                 assert!(stats <= 1, "{side}: closed channels must leave no stats, {stats} left");
             }
             drop(kept);
+        }));
+    }
+
+    /// zenoh-web patch: zenoh-gateway's subscribe/unsubscribe over one connection. Each round
+    /// the browser adds a recvonly transceiver and offers, the gateway adds a track and answers;
+    /// then the browser stops the transceiver and offers again. Once that negotiation is
+    /// applied, neither side may keep the transceiver, its async wrapper or its track's event
+    /// sender.
+    #[test]
+    fn stopped_transceivers_leave_nothing_behind() {
+        use rtc::rtp_transceiver::rtp_sender::{
+            RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters,
+        };
+
+        async fn media_peer(network: &Arc<MockUDPNetwork>) -> Peer {
+            let rt = Arc::new(MockRuntime::with_network(Arc::clone(network)));
+            let rec = Arc::new(StateRecorder::default());
+            let mut media_engine = MediaEngine::default();
+            media_engine.register_default_codecs().expect("codecs");
+            let pc = PeerConnectionBuilder::new()
+                .with_setting_engine(
+                    SettingEngineBuilder::new()
+                        .with_multicast_dns_mode(rtc::ice::mdns::MulticastDnsMode::Disabled)
+                        .build(),
+                )
+                .with_media_engine(media_engine)
+                .with_runtime(Arc::clone(&rt) as Arc<dyn Runtime>)
+                .with_handler(Arc::clone(&rec) as Arc<dyn PeerConnectionEventHandler>)
+                .with_udp_addrs(vec!["127.0.0.1:0"])
+                .build_impl()
+                .await
+                .expect("build");
+            Peer {
+                inner: Arc::clone(&pc.inner),
+                pc: Box::new(pc),
+                rt,
+                rec,
+            }
+        }
+
+        async fn negotiate(offerer: &Peer, answerer: &Peer) {
+            let offer = offerer.pc.create_offer(None).await.expect("offer");
+            offerer.pc.set_local_description(offer.clone()).await.expect("set local");
+            answerer.pc.set_remote_description(offer).await.expect("set remote");
+            let answer = answerer.pc.create_answer(None).await.expect("answer");
+            answerer.pc.set_local_description(answer.clone()).await.expect("set local");
+            offerer.pc.set_remote_description(answer).await.expect("set remote");
+        }
+
+        let network = Arc::new(MockUDPNetwork::new());
+        let driver = MockRuntime::new();
+        driver.block_on(Box::pin(async {
+            let browser = media_peer(&network).await;
+            let gateway = media_peer(&network).await;
+
+            for round in 0..10u32 {
+                let subscription = browser
+                    .pc
+                    .add_transceiver_from_kind(RtpCodecKind::Video, None)
+                    .await
+                    .expect("recvonly transceiver");
+                let track = Arc::new(TrackLocalStaticRTP::new(rtc::media_stream::MediaStreamTrack::new(
+                    format!("stream-{round}"),
+                    format!("track-{round}"),
+                    format!("label-{round}"),
+                    RtpCodecKind::Video,
+                    vec![RTCRtpEncodingParameters {
+                        rtp_coding_parameters: RTCRtpCodingParameters {
+                            ssrc: Some(1000 + round),
+                            ..Default::default()
+                        },
+                        codec: RTCRtpCodec {
+                            mime_type: "video/VP8".to_owned(),
+                            clock_rate: 90000,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }],
+                )));
+                gateway.pc.add_track(track).await.expect("add track");
+                negotiate(&browser, &gateway).await;
+                assert_eq!(gateway.inner.track_local_events_tx.lock().await.len(), 1);
+
+                subscription.stop().await.expect("stop");
+                negotiate(&browser, &gateway).await;
+
+                for (side, peer) in [("browser", &browser), ("gateway", &gateway)] {
+                    assert!(
+                        peer.pc.get_transceivers().await.is_empty(),
+                        "round {round}: {side} kept a stopped transceiver"
+                    );
+                    assert!(peer.inner.rtp_transceivers.lock().await.is_empty());
+                    assert!(
+                        peer.inner.track_local_events_tx.lock().await.is_empty(),
+                        "round {round}: {side} kept a track's event sender"
+                    );
+                    assert!(peer.inner.track_remote_events_tx.lock().await.is_empty());
+                }
+            }
         }));
     }
 
