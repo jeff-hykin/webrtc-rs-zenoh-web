@@ -18,7 +18,7 @@ Fork of [rtc](https://crates.io/crates/rtc) 0.21.0 (webrtc-rs, MIT OR Apache-2.0
    Bugs: a channel's stats accumulator stayed after it closed, and a channel closed before SCTP was up
    (never dialed, so no stream would ever close) stayed registered. Change: the stream's close removes
    the stats; closing an undialed channel removes it, its stats, and fires `OnClose`.
-4. **Dependencies point at the forks**: `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
+4. **Dependencies point at the forks**: `srtp` is `zenoh-web-rtc-srtp`, `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
    `zenoh-web-rtc-datachannel` (which uses the same SCTP fork, so their types match).
 
 Manifest: dev-dependencies, examples and tests removed (not vendored).

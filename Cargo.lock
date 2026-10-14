@@ -1565,20 +1565,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtc-srtp"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2219abff4963802959a9fa8cff370f47ebbcdf92e783e5d8446b440414a8c76e"
-dependencies = [
- "byteorder",
- "bytes",
- "rtc-crypto",
- "rtc-rtcp",
- "rtc-rtp",
- "rtc-shared",
-]
-
-[[package]]
 name = "rtc-stun"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2321,7 +2307,6 @@ dependencies = [
  "rtc-rtp",
  "rtc-sdp",
  "rtc-shared",
- "rtc-srtp",
  "rtc-stun",
  "rtc-turn",
  "rustls",
@@ -2334,6 +2319,7 @@ dependencies = [
  "x509-parser 0.16.0",
  "zenoh-web-rtc-datachannel",
  "zenoh-web-rtc-sctp",
+ "zenoh-web-rtc-srtp",
 ]
 
 [[package]]
@@ -2361,6 +2347,19 @@ dependencies = [
  "rustc-hash",
  "slab",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "zenoh-web-rtc-srtp"
+version = "0.21.0-zw.4"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "lazy_static",
+ "rtc-crypto",
+ "rtc-rtcp",
+ "rtc-rtp",
+ "rtc-shared",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@
 | package | upstream | changes |
 |---|---|---|
 | `zenoh-web-rtc-sctp` | `rtc-sctp` | the SCTP fixes: [rtc-sctp/PATCHES.md](rtc-sctp/PATCHES.md) |
+| `zenoh-web-rtc-srtp` | `rtc-srtp` | an ended stream's SSRC state can be freed: [rtc-srtp/PATCHES.md](rtc-srtp/PATCHES.md) |
 | `zenoh-web-rtc-datachannel` | `rtc-datachannel` | none, on the SCTP fork: [rtc-datachannel/PATCHES.md](rtc-datachannel/PATCHES.md) |
 | `zenoh-web-rtc` | `rtc` | the data channel reliability and stream-id reuse fixes, on the two forks above: [rtc/PATCHES.md](rtc/PATCHES.md) |
 | `zenoh-web-webrtc` | `webrtc` | the negotiated header extension ids for bound tracks, on the rtc fork: [webrtc/PATCHES.md](webrtc/PATCHES.md) |
@@ -17,7 +18,7 @@ webrtc = { package = "zenoh-web-webrtc", version = "=0.21.0-zw.3" }
 ## Versions
 
 Upstream version + `-zw.N`; bump `N` for new fork fixes, reset it when rebasing on a new upstream.
-All four crates share one version and depend on each other by exact version (and path, inside
+All five crates share one version and depend on each other by exact version (and path, inside
 this repository).
 
 - `0.21.0-zw.1`: SCTP abandons fragmented partially-reliable messages whole, drops a reset
@@ -32,7 +33,7 @@ this repository).
 
 ## Publishing
 
-Each crate needs the previous ones on crates.io, so publish in order: `rtc-sctp`, `rtc-datachannel`,
+Each crate needs the previous ones on crates.io, so publish in order: `rtc-sctp`, `rtc-srtp`, `rtc-datachannel`,
 `rtc`, `webrtc` (`cargo publish -p zenoh-web-rtc-sctp`, ...; `cargo package --list -p <package>`
 first). Tests: `cargo test --workspace` (`rtc-sctp` keeps upstream's unit tests).
 

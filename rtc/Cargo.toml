@@ -154,9 +154,10 @@ default-features = false
 package = "rtc-shared"
 
 [dependencies.srtp]
-version = "0.21.0"
+version = "=0.21.0-zw.4"
 default-features = false
-package = "rtc-srtp"
+package = "zenoh-web-rtc-srtp"
+path = "../rtc-srtp"
 
 [dependencies.stun]
 version = "0.21.0"

@@ -1,3 +1,3 @@
 [workspace]
-members = ["rtc-sctp", "rtc-datachannel", "rtc", "webrtc"]
+members = ["rtc-sctp", "rtc-srtp", "rtc-datachannel", "rtc", "webrtc"]
 resolver = "2"
