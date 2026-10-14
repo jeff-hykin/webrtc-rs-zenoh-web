@@ -3825,3 +3825,41 @@ fn test_assoc_duplicate_reset_request_does_not_reset_a_reused_stream() -> Result
     assert_eq!(read(&mut pair)?, b"second");
     Ok(())
 }
+
+/// zenoh-web patch: a peer-opened stream sits in the accept queue until `accept_stream` takes it,
+/// and rtc never does (it learns of new streams from `StreamEvent::Opened`), so every stream a
+/// browser opened stayed queued for the life of the association. Ending the stream must drop it.
+#[test]
+fn test_assoc_reset_stream_leaves_the_accept_queue() -> Result<()> {
+    let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut pair, client_ch, server_ch, 1)?;
+
+    for round in 0..20u16 {
+        let si = 2 + round % 4;
+        let _ = pair
+            .client_conn_mut(client_ch)
+            .open_stream(si, PayloadProtocolIdentifier::Binary)?;
+        let now = pair.time;
+        pair.client_stream(client_ch, si)?
+            .write_sctp(now, &Bytes::from_static(b"open"), PayloadProtocolIdentifier::Dcep)?;
+        pair.drive();
+        // the application reads by stream id, never through accept_stream
+        let mut buf = vec![0u8; 64];
+        let chunks = pair.server_stream(server_ch, si)?.read_sctp()?.expect("the open message");
+        chunks.read(&mut buf)?;
+
+        let now = pair.time;
+        pair.client_stream(client_ch, si)?.stop(now)?;
+        pair.drive();
+        let now = pair.time;
+        if let Ok(mut stream) = pair.server_stream(server_ch, si) {
+            stream.stop(now)?;
+        }
+        pair.drive();
+        assert!(pair.server_conn_mut(server_ch).stream(si).is_err(), "round {round}: the stream must be closed");
+    }
+
+    let server = pair.server_conn_mut(server_ch);
+    assert_eq!(server.stream_queue.iter().filter(|&&id| id != 1).count(), 0, "closed streams must not stay in the accept queue: {:?}", server.stream_queue);
+    Ok(())
+}

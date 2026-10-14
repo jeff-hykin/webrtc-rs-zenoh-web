@@ -26,6 +26,11 @@ Fork of [rtc-sctp](https://crates.io/crates/rtc-sctp) 0.21.0 (webrtc-rs, MIT OR 
    by which time the peer may have reused the stream ids for new channels, silently killing them.
    Change: remember the last performed request and only re-answer duplicates.
 
-Tests for 2–4 are in `src/endpoint/endpoint_test.rs` and `src/queue/queue_test.rs` (search `zenoh-web patch`).
+5. **A stream that ends leaves the accept queue** (`src/association/mod.rs`, `unregister_stream`). Bug:
+   every peer-opened stream was queued for `accept_stream`, which rtc never calls (it learns of new
+   streams from `StreamEvent::Opened`), so each data channel a browser opened left 2 bytes queued for
+   the life of the association. Change: unregistering a stream removes it from the queue.
+
+Tests for 2–5 are in `src/endpoint/endpoint_test.rs` and `src/queue/queue_test.rs` (search `zenoh-web patch`).
 
 Versioning: upstream version + `-zw.N` (`0.21.0-zw.4`, no change of its own since zw.2: the forks share one version); bump `N` for new fork fixes, reset it when rebasing on a new upstream.

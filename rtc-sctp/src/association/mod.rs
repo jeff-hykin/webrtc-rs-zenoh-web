@@ -178,7 +178,8 @@ pub struct Association {
     inflight_queue: PayloadQueue,
     pending_queue: PendingQueue,
     control_queue: VecDeque<Packet>,
-    stream_queue: VecDeque<u16>,
+    /// Peer-opened streams not yet taken by `accept_stream`.
+    pub(crate) stream_queue: VecDeque<u16>,
 
     pub(crate) mtu: u32,
     // max DATA chunk payload size
@@ -782,6 +783,8 @@ impl Association {
     /// unregister_stream un-registers a stream from the association
     /// The caller should hold the association write lock.
     fn unregister_stream(&mut self, stream_identifier: StreamId, reason: AssociationError) {
+        // zenoh-web patch: a stream that ends before anyone accepted it leaves the accept queue too
+        self.stream_queue.retain(|&id| id != stream_identifier);
         if let Some(mut s) = self.streams.remove(&stream_identifier) {
             debug!("[{}] unregister_stream {}", self.side, stream_identifier);
             self.events.push_back(Event::AssociationLost {
