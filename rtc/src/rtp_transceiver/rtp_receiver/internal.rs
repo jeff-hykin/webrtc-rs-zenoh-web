@@ -1,4 +1,5 @@
 use crate::media_stream::track::MediaStreamTrack;
+use interceptor::StreamInfo;
 use crate::peer_connection::configuration::interceptor_registry::create_stream_info;
 use crate::peer_connection::configuration::media_engine::MediaEngine;
 use crate::rtp_transceiver::direction::RTCRtpTransceiverDirection;
@@ -41,6 +42,10 @@ pub(crate) struct RTCRtpReceiverInternal {
     receive_codecs: Vec<RTCRtpCodecParameters>,
 
     last_returned_parameters: Option<RTCRtpReceiveParameters>,
+
+    /// zenoh-web patch: the streams bound to the interceptor chain, so `stop` unbinds exactly
+    /// those, whatever the receiver's codings and parameters became since.
+    bound_streams: Vec<StreamInfo>,
 }
 
 impl RTCRtpReceiverInternal {
@@ -55,6 +60,7 @@ impl RTCRtpReceiverInternal {
 
             receive_codecs: vec![],
             last_returned_parameters: None,
+            bound_streams: vec![],
         }
     }
 
@@ -213,10 +219,14 @@ impl RTCRtpReceiverInternal {
 
     pub(crate) fn stop(
         &mut self,
-        media_engine: &MediaEngine,
+        _media_engine: &MediaEngine,
         interceptor: &mut dyn Interceptor,
     ) -> Result<()> {
-        self.interceptor_remote_streams_op(media_engine, interceptor, false);
+        // zenoh-web patch: unbind what was bound (its first packet bound it), not what the
+        // current codings would describe
+        for stream_info in self.bound_streams.drain(..) {
+            interceptor.unbind_remote_stream(&stream_info);
+        }
 
         Ok(())
     }
@@ -232,6 +242,7 @@ impl RTCRtpReceiverInternal {
     /// [RFC 8888]: https://datatracker.ietf.org/doc/html/rfc8888
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn interceptor_remote_stream_op(
+        &mut self,
         interceptor: &mut dyn Interceptor,
         is_binding: bool,
         ssrc: SSRC,
@@ -256,8 +267,10 @@ impl RTCRtpReceiverInternal {
 
         if is_binding {
             interceptor.bind_remote_stream(&stream_info);
+            self.bound_streams.push(stream_info);
         } else {
             interceptor.unbind_remote_stream(&stream_info);
+            self.bound_streams.retain(|bound| bound.ssrc != stream_info.ssrc);
         }
     }
 
@@ -269,7 +282,7 @@ impl RTCRtpReceiverInternal {
     ) {
         let parameters = self.get_parameters(media_engine).clone();
 
-        for coding in self.track().codings() {
+        for coding in self.track().codings().to_vec() {
             let (codec, match_type) =
                 codec_parameters_fuzzy_search(&coding.codec, &parameters.rtp_parameters.codecs);
             if let Some(&ssrc) = coding.rtp_coding_parameters.ssrc.as_ref()
@@ -287,7 +300,7 @@ impl RTCRtpReceiverInternal {
                         .map(|payload_type| (fec.ssrc, payload_type))
                 });
 
-                RTCRtpReceiverInternal::interceptor_remote_stream_op(
+                self.interceptor_remote_stream_op(
                     interceptor,
                     is_binding,
                     ssrc,
@@ -305,7 +318,7 @@ impl RTCRtpReceiverInternal {
                 // tracks arrival needs to know it exists. RTX and FEC are treated identically
                 // here — they are the same shape of thing.
                 if let Some((ssrc_rtx, payload_type_rtx)) = rtx {
-                    RTCRtpReceiverInternal::interceptor_remote_stream_op(
+                    self.interceptor_remote_stream_op(
                         interceptor,
                         is_binding,
                         ssrc_rtx,
@@ -320,7 +333,7 @@ impl RTCRtpReceiverInternal {
                 }
 
                 if let Some((ssrc_fec, payload_type_fec)) = fec {
-                    RTCRtpReceiverInternal::interceptor_remote_stream_op(
+                    self.interceptor_remote_stream_op(
                         interceptor,
                         is_binding,
                         ssrc_fec,

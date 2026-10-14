@@ -533,6 +533,108 @@ mod tests {
         context
     }
 
+    /// Tracks the local streams bound to the interceptor chain (bind inserts, unbind removes),
+    /// standing in for the NACK responder's send buffers and the congestion-control history.
+    #[derive(Default)]
+    struct BoundLocalStreams {
+        ssrcs: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
+        queue: std::collections::VecDeque<interceptor::TaggedPacket>,
+    }
+
+    impl Protocol<interceptor::TaggedPacket, interceptor::TaggedPacket, ()> for BoundLocalStreams {
+        type Rout = interceptor::TaggedPacket;
+        type Wout = interceptor::TaggedPacket;
+        type Eout = ();
+        type Error = shared::error::Error;
+        type Time = Instant;
+
+        fn handle_read(&mut self, msg: interceptor::TaggedPacket) -> Result<(), Self::Error> {
+            self.queue.push_back(msg);
+            Ok(())
+        }
+        fn poll_read(&mut self) -> Option<Self::Rout> {
+            self.queue.pop_front()
+        }
+        fn handle_write(&mut self, msg: interceptor::TaggedPacket) -> Result<(), Self::Error> {
+            self.queue.push_back(msg);
+            Ok(())
+        }
+        fn poll_write(&mut self) -> Option<Self::Wout> {
+            self.queue.pop_front()
+        }
+    }
+
+    impl interceptor::Interceptor for BoundLocalStreams {
+        fn bind_local_stream(&mut self, info: &interceptor::StreamInfo) {
+            self.ssrcs.lock().unwrap().insert(info.ssrc);
+        }
+        fn unbind_local_stream(&mut self, info: &interceptor::StreamInfo) {
+            self.ssrcs.lock().unwrap().remove(&info.ssrc);
+        }
+        fn bind_remote_stream(&mut self, _info: &interceptor::StreamInfo) {}
+        fn unbind_remote_stream(&mut self, _info: &interceptor::StreamInfo) {}
+    }
+
+    /// A peer connection as zenoh-gateway builds one: the default interceptors (NACK, reports,
+    /// TWCC), plus one that shows which local streams the chain still holds.
+    fn build_gateway() -> (
+        RTCPeerConnection,
+        std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
+    ) {
+        use crate::peer_connection::configuration::interceptor_registry::{
+            Registry, register_default_interceptors,
+        };
+        let bound = BoundLocalStreams::default();
+        let bound_ssrcs = std::sync::Arc::clone(&bound.ssrcs);
+        let mut media_engine = MediaEngine::default();
+        media_engine
+            .register_default_codecs()
+            .expect("register default codecs");
+        let registry = register_default_interceptors(Registry::new(), &mut media_engine)
+            .expect("default interceptors")
+            .with(interceptor::Slot::Custom(15_000), bound);
+        let gateway = RTCPeerConnectionBuilder::new()
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
+            .build(Instant::now())
+            .expect("build peer connection");
+        (gateway, bound_ssrcs)
+    }
+
+    /// zenoh-web patch: the gateway stops a transceiver itself after a negotiation, while the
+    /// browser's m-line for it is still live. Its sender was unbound by the stop, but each later
+    /// negotiation marked it negotiated again (its mid still in the offer) and bound its streams
+    /// anew: a NACK send buffer per renegotiation, never freed. Now the next answer rejects the
+    /// m-line, nothing rebinds, and the transceiver is removed.
+    #[test]
+    fn a_locally_stopped_sender_is_not_bound_again() {
+        let mut browser = build_pc();
+        let (mut gateway, bound_ssrcs) = build_gateway();
+
+        browser
+            .add_transceiver_from_kind(RtpCodecKind::Video, None)
+            .expect("add browser transceiver");
+        let sender_id = gateway.add_track(video_track("a", 7)).expect("add track");
+        negotiate(&mut browser, &mut gateway);
+        assert_eq!(bound_ssrcs.lock().unwrap().len(), 1);
+
+        gateway
+            .rtp_transceiver(sender_id.0)
+            .expect("transceiver")
+            .stop()
+            .expect("stop");
+        assert!(bound_ssrcs.lock().unwrap().is_empty(), "stop unbinds");
+
+        for _ in 0..3 {
+            negotiate(&mut browser, &mut gateway);
+            assert!(
+                bound_ssrcs.lock().unwrap().is_empty(),
+                "a later negotiation must not bind the stopped sender again"
+            );
+        }
+        assert!(gateway.rtp_transceiver(sender_id.0).is_none(), "removed");
+    }
+
     /// zenoh-web patch: zenoh-gateway's pattern over one long-lived connection. Each round the
     /// browser adds a recvonly transceiver and offers, the gateway adds a track and answers;
     /// then the browser stops the transceiver and offers again (its m-line rejected). Once that
@@ -541,7 +643,7 @@ mod tests {
     #[test]
     fn stopped_transceivers_are_removed_once_negotiation_completes() {
         let mut browser = build_pc();
-        let mut gateway = build_pc();
+        let (mut gateway, bound_ssrcs) = build_gateway();
 
         for round in 0..10 {
             let browser_tid = browser
@@ -560,6 +662,11 @@ mod tests {
                 .next()
                 .expect("an ssrc");
             assert_eq!(gateway.pipeline_context.stats.outbound_rtp_streams.len(), 1);
+            assert_eq!(
+                *bound_ssrcs.lock().unwrap(),
+                std::collections::HashSet::from([ssrc]),
+                "the subscription's stream is bound"
+            );
             gateway.pipeline_context.srtp_handler_context.local_srtp_context =
                 Some(srtp_context_with(ssrc));
 
@@ -573,6 +680,12 @@ mod tests {
             assert_eq!(browser.rtp_transceivers.len(), 0, "round {round}: browser");
             assert_eq!(gateway.rtp_transceivers.len(), 0, "round {round}: gateway");
             assert!(gateway.rtp_sender(sender_id).is_none(), "a removed sender is gone");
+            assert!(
+                bound_ssrcs.lock().unwrap().is_empty(),
+                "round {round}: the stopped sender's stream must be unbound from the interceptors"
+            );
+            // zenoh-gateway then stops the dropped track's transceiver itself: already gone
+            assert!(gateway.rtp_transceiver(sender_id.0).is_none());
             assert!(
                 gateway.pipeline_context.stats.outbound_rtp_streams.is_empty(),
                 "round {round}: the stopped sender's stats must go"

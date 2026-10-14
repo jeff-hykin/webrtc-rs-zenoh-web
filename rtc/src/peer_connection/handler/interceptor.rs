@@ -7,7 +7,6 @@ use crate::peer_connection::handler::endpoint::resolve_rtx_primary;
 use crate::peer_connection::message::internal::{
     RTCMessageInternal, RTPMessage, TaggedRTCMessageInternal,
 };
-use crate::rtp_transceiver::rtp_receiver::internal::RTCRtpReceiverInternal;
 use crate::rtp_transceiver::rtp_sender::rtp_codec::{find_fec_payload_type, find_rtx_payload_type};
 use crate::rtp_transceiver::rtp_sender::rtp_coding_parameters::RTCRtpCodingParameters;
 use crate::rtp_transceiver::rtp_sender::rtp_header_extension_capability::RTCRtpHeaderExtensionCapability;
@@ -334,7 +333,7 @@ impl<'a> InterceptorHandler<'a> {
             })
             .unwrap_or((None, None));
 
-        let parameters = receiver.get_parameters(self.media_engine);
+        let parameters = receiver.get_parameters(self.media_engine).clone();
         // Both halves or neither, per repair flow — see `interceptor_remote_streams_op`. RTX and
         // FEC are handled identically: both repair this stream from a separate SSRC.
         let rtx = rtx_ssrc.zip(find_rtx_payload_type(
@@ -343,7 +342,7 @@ impl<'a> InterceptorHandler<'a> {
         ));
         let fec = fec_ssrc.zip(find_fec_payload_type(&parameters.rtp_parameters.codecs));
 
-        RTCRtpReceiverInternal::interceptor_remote_stream_op(
+        receiver.interceptor_remote_stream_op(
             self.interceptor,
             true,
             ssrc,
@@ -362,7 +361,7 @@ impl<'a> InterceptorHandler<'a> {
         // only the primary here would also leave the pair unbalanced — `stop` unbinds all three, so
         // the repair flows would be unbound having never been bound.
         if let Some((ssrc_rtx, payload_type_rtx)) = rtx {
-            RTCRtpReceiverInternal::interceptor_remote_stream_op(
+            receiver.interceptor_remote_stream_op(
                 self.interceptor,
                 true,
                 ssrc_rtx,
@@ -377,7 +376,7 @@ impl<'a> InterceptorHandler<'a> {
         }
 
         if let Some((ssrc_fec, payload_type_fec)) = fec {
-            RTCRtpReceiverInternal::interceptor_remote_stream_op(
+            receiver.interceptor_remote_stream_op(
                 self.interceptor,
                 true,
                 ssrc_fec,
@@ -455,10 +454,10 @@ impl<'a> InterceptorHandler<'a> {
         }];
         receiver.set_coding_parameters(receive_codings);
 
-        let parameters = receiver.get_parameters(self.media_engine);
+        let parameters = receiver.get_parameters(self.media_engine).clone();
         // An undeclared SSRC arrived without any `a=ssrc-group` to associate it with, so there is
         // no repair flow to report — the codings above are built with `fec: None`.
-        RTCRtpReceiverInternal::interceptor_remote_stream_op(
+        receiver.interceptor_remote_stream_op(
             self.interceptor,
             true,
             ssrc,
@@ -562,7 +561,7 @@ impl<'a> InterceptorHandler<'a> {
             })
             .unwrap_or((None, None));
 
-        let parameters = receiver.get_parameters(self.media_engine);
+        let parameters = receiver.get_parameters(self.media_engine).clone();
         // Both halves or neither, per repair flow — see `interceptor_remote_streams_op`. RTX and
         // FEC are handled identically: both repair this stream from a separate SSRC.
         let rtx = rtx_ssrc.zip(find_rtx_payload_type(
@@ -571,7 +570,7 @@ impl<'a> InterceptorHandler<'a> {
         ));
         let fec = fec_ssrc.zip(find_fec_payload_type(&parameters.rtp_parameters.codecs));
 
-        RTCRtpReceiverInternal::interceptor_remote_stream_op(
+        receiver.interceptor_remote_stream_op(
             self.interceptor,
             true,
             ssrc,
@@ -590,7 +589,7 @@ impl<'a> InterceptorHandler<'a> {
         // matters most — every layer has its own retransmission flow, and NACK-driven repair is
         // what keeps the upper layers usable.
         if let Some((ssrc_rtx, payload_type_rtx)) = rtx {
-            RTCRtpReceiverInternal::interceptor_remote_stream_op(
+            receiver.interceptor_remote_stream_op(
                 self.interceptor,
                 true,
                 ssrc_rtx,
@@ -605,7 +604,7 @@ impl<'a> InterceptorHandler<'a> {
         }
 
         if let Some((ssrc_fec, payload_type_fec)) = fec {
-            RTCRtpReceiverInternal::interceptor_remote_stream_op(
+            receiver.interceptor_remote_stream_op(
                 self.interceptor,
                 true,
                 ssrc_fec,

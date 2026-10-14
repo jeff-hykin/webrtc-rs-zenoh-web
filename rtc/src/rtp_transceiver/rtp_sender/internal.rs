@@ -13,7 +13,7 @@ use crate::rtp_transceiver::rtp_sender::rtp_encoding_parameters::RTCRtpEncodingP
 use crate::rtp_transceiver::rtp_sender::rtp_header_extension_capability::RTCRtpHeaderExtensionCapability;
 use crate::rtp_transceiver::rtp_sender::rtp_send_parameters::RTCRtpSendParameters;
 use crate::rtp_transceiver::rtp_sender::set_parameter_options::RTCSetParameterOptions;
-use interceptor::Interceptor;
+use interceptor::{Interceptor, StreamInfo};
 use shared::error::{Error, Result};
 use shared::util::math_rand_alpha;
 
@@ -48,6 +48,11 @@ pub(crate) struct RTCRtpSenderInternal {
     /// Whether SDP negotiation has occurred for this sender
     negotiated: bool,
     sent: bool,
+    /// zenoh-web patch: the streams bound to the interceptor chain, unbound exactly as bound.
+    /// Recomputing them at stop time from the sender's current parameters missed any whose codec
+    /// no longer matched (a renegotiation changed the codecs), leaving its NACK send buffer and
+    /// congestion-control state bound for the life of the connection.
+    bound_streams: Vec<StreamInfo>,
 }
 
 impl RTCRtpSenderInternal {
@@ -81,6 +86,7 @@ impl RTCRtpSenderInternal {
             last_returned_parameters: None,
             negotiated: false,
             sent: false,
+            bound_streams: vec![],
         }
     }
 
@@ -317,11 +323,12 @@ impl RTCRtpSenderInternal {
     /// Stops the sender (placeholder for future implementation).
     pub(crate) fn stop(
         &mut self,
-        media_engine: &MediaEngine,
+        _media_engine: &MediaEngine,
         interceptor: &mut dyn Interceptor,
     ) -> Result<()> {
-        if self.has_sent() && !self.track().codings().is_empty() {
-            self.interceptor_local_streams_op(media_engine, interceptor, false);
+        // zenoh-web patch: unbind what was bound, however the parameters changed since
+        for stream_info in self.bound_streams.drain(..) {
+            interceptor.unbind_local_stream(&stream_info);
         }
 
         self.negotiated = false;
@@ -365,6 +372,7 @@ impl RTCRtpSenderInternal {
     ) {
         let parameters = self.get_parameters(media_engine).clone();
 
+        let mut bound = vec![];
         for coding in self.track().codings() {
             let (codec, match_type) =
                 codec_parameters_fuzzy_search(&coding.codec, &parameters.rtp_parameters.codecs);
@@ -392,10 +400,12 @@ impl RTCRtpSenderInternal {
 
                 if is_binding {
                     interceptor.bind_local_stream(&stream_info);
+                    bound.push(stream_info);
                 } else {
                     interceptor.unbind_local_stream(&stream_info);
                 }
             }
         }
+        self.bound_streams.extend(bound);
     }
 }

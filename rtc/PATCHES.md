@@ -30,7 +30,16 @@ Fork of [rtc](https://crates.io/crates/rtc) 0.21.0 (webrtc-rs, MIT OR Apache-2.0
    m-line is rejected or gone are removed. A stopped transceiver's m-line is written rejected (port 0);
    a rejected m-line with no transceiver left stays rejected in its place, and a new transceiver
    recycles it (under a new mid) when we offer. Candidates go on the first non-rejected section.
-5. **Dependencies point at the forks**: `srtp` is `zenoh-web-rtc-srtp`, `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
+5. **A stopped sender is never bound again, and streams unbind exactly as bound**
+   (`src/peer_connection/internal.rs` `start_rtp_senders`, `src/rtp_transceiver/rtp_sender/internal.rs`
+   and `rtp_receiver/internal.rs` `bound_streams`; marked `zenoh-web patch`). Bug: a stopped
+   transceiver's mid stayed in later offers, which marked its sender negotiated again, so every later
+   negotiation bound its streams anew (zenoh-gateway: one ~115 KB NACK send buffer per resubscribe,
+   seen in a dhat profile) and nothing unbound them; and `stop` unbound what the *current* parameters
+   described, missing streams whose codec had changed since they were bound. Change: stopped
+   transceivers are skipped when binding; senders and receivers record the `StreamInfo`s they bound and
+   `stop` unbinds exactly those.
+6. **Dependencies point at the forks**: `srtp` is `zenoh-web-rtc-srtp`, `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
    `zenoh-web-rtc-datachannel` (which uses the same SCTP fork, so their types match).
 
 Manifest: dev-dependencies, examples and tests removed (not vendored).

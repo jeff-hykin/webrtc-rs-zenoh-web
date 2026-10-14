@@ -891,6 +891,13 @@ impl RTCPeerConnection {
         )> = Vec::new();
 
         for transceiver in self.rtp_transceivers.iter_mut() {
+            // zenoh-web patch: a stopped transceiver's sender is never (re)bound. Its rejected
+            // m-line stays in later descriptions, which marked the sender negotiated again, so
+            // every later negotiation bound its streams anew (a NACK send buffer each) and
+            // nothing ever unbound them.
+            if transceiver.stopped() {
+                continue;
+            }
             let transceiver_id = transceiver.id();
             // Get kind and mid before mutable borrow of sender
             let kind = transceiver.kind();
