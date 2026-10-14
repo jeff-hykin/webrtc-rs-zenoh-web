@@ -94,3 +94,8 @@ features = [
 ]
 optional = true
 
+
+# zenoh-web: the crate-level doc example runs on `#[tokio::main]`
+[dev-dependencies.tokio]
+version = "1.52.3"
+features = ["macros", "rt-multi-thread"]

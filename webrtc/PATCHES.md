@@ -31,4 +31,11 @@ get the patched SCTP and data channel code.
    has handed the channel its `OnClose` (its `poll` then ends after the close); `Drop` falls back to a
    task when the map is busy.
 
+4. **A removed transceiver is released** (`src/peer_connection/mod.rs` `prune_transceivers`, run after
+   every applied description and by `get_transceivers`; `src/rtp_transceiver/mod.rs` `release`; marked
+   `zenoh-web patch`). Bug: the wrapper kept every transceiver (and with it the connection, its
+   sender's bound track and that track's RTCP event sender) for the life of the connection. Change:
+   when the core removes a stopped transceiver, the wrapper drops it, unbinds its sender's track and
+   drops both tracks' event senders.
+
 Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.4`: patch 2).
