@@ -8,7 +8,8 @@ use crate::rtp_transceiver::rtp_sender::rtp_codec::{
 };
 use crate::rtp_transceiver::rtp_sender::{RTCRtpCodecParameters, RtpCodecKind};
 use crate::rtp_transceiver::{
-    PayloadType, RTCRtpTransceiverDirection, RTCRtpTransceiverInit, fmtp,
+    PayloadType, RTCRtpTransceiverDirection, RTCRtpTransceiverId, RTCRtpTransceiverInit, SSRC,
+    fmtp,
 };
 use interceptor::Interceptor;
 use log::trace;
@@ -27,6 +28,9 @@ use unicase::UniCase;
 /// See [RTCRtpTransceiver](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver) in the W3C WebRTC specification.
 #[derive(Default, Clone)]
 pub(crate) struct RTCRtpTransceiverInternal {
+    /// zenoh-web patch: stable id, assigned when added to a connection and never reused, so a
+    /// transceiver can be removed without renaming the ones after it.
+    id: RTCRtpTransceiverId,
     mid: Option<String>,
     kind: RtpCodecKind,
     sender: Option<RTCRtpSenderInternal>,
@@ -41,6 +45,20 @@ pub(crate) struct RTCRtpTransceiverInternal {
     /// is subsequently rolled back must be stopped and removed, unless a track was later
     /// attached to them via `add_track`.
     created_by_remote_description: bool,
+}
+
+/// The SSRCs a sender's track sends on: primary, RTX and FEC.
+pub(crate) fn sender_ssrcs(sender: &RTCRtpSenderInternal) -> Vec<SSRC> {
+    let mut ssrcs = vec![];
+    for coding in sender.track().codings() {
+        let parameters = &coding.rtp_coding_parameters;
+        ssrcs.extend(parameters.ssrc);
+        ssrcs.extend(parameters.rtx.as_ref().map(|rtx| rtx.ssrc));
+        ssrcs.extend(parameters.fec.as_ref().map(|fec| fec.ssrc));
+    }
+    ssrcs.sort_unstable();
+    ssrcs.dedup();
+    ssrcs
 }
 
 impl fmt::Debug for RTCRtpTransceiverInternal {
@@ -65,6 +83,7 @@ impl RTCRtpTransceiverInternal {
         init: RTCRtpTransceiverInit,
     ) -> Self {
         Self {
+            id: 0,
             mid: None,
             kind,
             sender: if let Some(track) = track {
@@ -88,6 +107,34 @@ impl RTCRtpTransceiverInternal {
             stopped: false,
             created_by_remote_description: false,
         }
+    }
+
+    pub(crate) fn id(&self) -> RTCRtpTransceiverId {
+        self.id
+    }
+
+    pub(crate) fn set_id(&mut self, id: RTCRtpTransceiverId) {
+        self.id = id;
+    }
+
+    /// The SSRCs this transceiver's streams use, (sent, received): primary, RTX and FEC.
+    pub(crate) fn ssrcs(&self) -> (Vec<SSRC>, Vec<SSRC>) {
+        let mut local = vec![];
+        if let Some(sender) = &self.sender {
+            local = sender_ssrcs(sender);
+        }
+        let mut remote = vec![];
+        if let Some(receiver) = &self.receiver {
+            for coding in receiver.get_coding_parameters() {
+                remote.extend(coding.ssrc);
+                remote.extend(coding.rtx.as_ref().map(|rtx| rtx.ssrc));
+                remote.extend(coding.fec.as_ref().map(|fec| fec.ssrc));
+            }
+            remote.extend(receiver.track().ssrcs());
+            remote.sort_unstable();
+            remote.dedup();
+        }
+        (local, remote)
     }
 
     /// Returns the media stream identification tag (mid) for this transceiver.

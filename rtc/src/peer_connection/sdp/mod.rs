@@ -662,6 +662,11 @@ impl RTCPeerConnection {
         );
 
         let transceiver = &mut transceivers[media_section.transceiver_index];
+        if transceiver.stopped() {
+            // zenoh-web patch, RFC 9429 5.2.2 / 5.3.1: a stopped transceiver's m-line is rejected
+            d = d.with_media(rejected_media_description(transceiver.kind().to_string(), mid_value, ice_params));
+            return Ok((d, false));
+        }
         let mut media =
             MediaDescription::new_jsep_media_description(transceiver.kind().to_string(), vec![])
                 .with_value_attribute(ATTR_KEY_CONNECTION_SETUP.to_owned(), dtls_role.to_string())
@@ -713,42 +718,7 @@ impl RTCPeerConnection {
             // Explicitly reject track if we don't have the codec
             // RFC 9429 Section 5.3.1: Set port=0 to reject, further processing can be skipped
             // However, mid attribute is still needed for offer/answer correlation with BUNDLE
-            d = d.with_media(
-                MediaDescription {
-                    media_name: MediaName {
-                        media: transceiver.kind().to_string(),
-                        port: RangedPort {
-                            value: 0,
-                            range: None,
-                        },
-                        protos: vec![
-                            "UDP".to_owned(),
-                            "TLS".to_owned(),
-                            "RTP".to_owned(),
-                            "SAVPF".to_owned(),
-                        ],
-                        formats: vec!["0".to_owned()],
-                    },
-                    media_title: None,
-                    // We need to include connection information even if we're rejecting a track, otherwise Firefox will fail to
-                    // parse the SDP with an error like:
-                    // SIPCC Failed to parse SDP: SDP Parse Error on line 50:  c= connection line not specified for every media level, validation failed.
-                    // In addition this makes our SDP compliant with RFC 4566 Section 5.7: https://datatracker.ietf.org/doc/html/rfc4566#section-5.7
-                    connection_information: Some(ConnectionInformation {
-                        network_type: "IN".to_owned(),
-                        address_type: "IP4".to_owned(),
-                        address: Some(Address {
-                            address: "0.0.0.0".to_owned(),
-                            ttl: None,
-                            range: None,
-                        }),
-                    }),
-                    bandwidth: vec![],
-                    encryption_key: None,
-                    attributes: vec![],
-                }
-                .with_value_attribute(ATTR_KEY_MID.to_owned(), mid_value),
-            );
+            d = d.with_media(rejected_media_description(transceiver.kind().to_string(), mid_value, ice_params));
             return Ok((d, false));
         }
 
@@ -953,6 +923,54 @@ impl RTCPeerConnection {
     }
 }
 
+/// A rejected m-line (port 0, RFC 9429 5.3.1), keeping only its kind, mid (still needed to
+/// correlate offer and answer) and ICE credentials (so a description whose every media section is
+/// rejected still names them).
+pub(crate) fn rejected_media_description(
+    kind: String,
+    mid: String,
+    ice_params: &RTCIceParameters,
+) -> MediaDescription {
+    MediaDescription {
+        media_name: MediaName {
+            media: kind,
+            port: RangedPort {
+                value: 0,
+                range: None,
+            },
+            protos: vec![
+                "UDP".to_owned(),
+                "TLS".to_owned(),
+                "RTP".to_owned(),
+                "SAVPF".to_owned(),
+            ],
+            formats: vec!["0".to_owned()],
+        },
+        media_title: None,
+        // We need to include connection information even if we're rejecting a track, otherwise Firefox will fail to
+        // parse the SDP with an error like:
+        // SIPCC Failed to parse SDP: SDP Parse Error on line 50:  c= connection line not specified for every media level, validation failed.
+        // In addition this makes our SDP compliant with RFC 4566 Section 5.7: https://datatracker.ietf.org/doc/html/rfc4566#section-5.7
+        connection_information: Some(ConnectionInformation {
+            network_type: "IN".to_owned(),
+            address_type: "IP4".to_owned(),
+            address: Some(Address {
+                address: "0.0.0.0".to_owned(),
+                ttl: None,
+                range: None,
+            }),
+        }),
+        bandwidth: vec![],
+        encryption_key: None,
+        attributes: vec![],
+    }
+    .with_value_attribute(ATTR_KEY_MID.to_owned(), mid)
+    .with_ice_credentials(
+        ice_params.username_fragment.clone(),
+        ice_params.password.clone(),
+    )
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum SimulcastDirection {
     Send,
@@ -1014,6 +1032,9 @@ pub(crate) struct MediaSection {
     pub(crate) mid: String,
     pub(crate) transceiver_index: usize,
     pub(crate) data: bool,
+    /// zenoh-web patch: a rejected m-line with no transceiver (its transceiver was removed),
+    /// written back rejected with this media kind
+    pub(crate) rejected_kind: Option<String>,
     pub(crate) match_extensions: HashMap<String, u16>,
     pub(crate) rid_map: Vec<SimulcastRid>,
 }
@@ -1102,16 +1123,25 @@ impl RTCPeerConnection {
             *count += 1;
         };
 
-        for (i, m) in media_sections.iter().enumerate() {
+        // zenoh-web patch: candidates go on the first section that is not rejected (they were
+        // dropped altogether when the first section was a rejected one)
+        let mut candidates_added = false;
+        for m in media_sections {
             if m.data && m.transceiver_index != usize::MAX {
                 return Err(Error::ErrSDPMediaSectionMediaDataChanInvalid);
-            } else if !m.data && m.transceiver_index >= transceivers.len() {
+            } else if !m.data
+                && m.rejected_kind.is_none()
+                && m.transceiver_index >= transceivers.len()
+            {
                 return Err(Error::ErrSDPMediaSectionTrackInvalid);
             }
 
-            let should_add_candidates = i == 0;
+            let should_add_candidates = !candidates_added;
 
-            let should_add_id = if m.data {
+            let should_add_id = if let Some(kind) = &m.rejected_kind {
+                d = d.with_media(rejected_media_description(kind.clone(), m.mid.clone(), ice_params));
+                false
+            } else if m.data {
                 let params = AddDataMediaSectionParams {
                     should_add_candidates,
                     mid_value: m.mid.clone(),
@@ -1145,6 +1175,7 @@ impl RTCPeerConnection {
                 should_add_id
             };
 
+            candidates_added |= should_add_id;
             if should_add_id {
                 if bundle_match(params.match_bundle_group.as_ref(), &m.mid) {
                     append_bundle(&m.mid, &mut bundle_value, &mut bundle_count);
@@ -1191,6 +1222,11 @@ pub(crate) fn get_mid_value(media: &MediaDescription) -> Option<&String> {
         }
     }
     None
+}
+
+/// zenoh-web patch: whether an m-line is rejected (port 0, RFC 3264 6 / JSEP 5.3.1).
+pub(crate) fn is_rejected(media: &MediaDescription) -> bool {
+    media.media_name.port.value == 0
 }
 
 pub(crate) fn get_peer_direction(media: &MediaDescription) -> RTCRtpTransceiverDirection {

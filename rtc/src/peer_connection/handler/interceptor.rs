@@ -269,11 +269,7 @@ impl<'a> InterceptorHandler<'a> {
     /// stream must still stop the caller from trying the rid and undeclared paths, exactly as the
     /// endpoint's `find_track_id_by_ssrc` returning `Some` used to.
     fn bind_declared_ssrc(&mut self, now: Instant, ssrc: SSRC, payload_type: PayloadType) -> bool {
-        let Some((id, transceiver)) =
-            self.rtp_transceivers
-                .iter_mut()
-                .enumerate()
-                .find(|(_, transceiver)| {
+        let Some(transceiver) = self.rtp_transceivers.iter_mut().find(|transceiver| {
                     if let Some(receiver) = transceiver.receiver() {
                         receiver.get_coding_parameters().iter().any(|coding| {
                             coding.ssrc.is_some_and(|coding_ssrc| coding_ssrc == ssrc)
@@ -285,6 +281,7 @@ impl<'a> InterceptorHandler<'a> {
         else {
             return false;
         };
+        let id = transceiver.id();
 
         // Get kind and mid before borrowing receiver mutably
         let kind = transceiver.kind();
@@ -433,6 +430,7 @@ impl<'a> InterceptorHandler<'a> {
         let Some(transceiver) = self.rtp_transceivers.first_mut() else {
             return false;
         };
+        let id = transceiver.id();
         // Get kind and mid before borrowing receiver mutably
         let kind = transceiver.kind();
         let mid = transceiver.mid().clone().unwrap_or_default();
@@ -485,10 +483,10 @@ impl<'a> InterceptorHandler<'a> {
         // Note: undeclared SSRC case doesn't have RTX/FEC info
         self.stats.get_or_create_inbound_rtp_streams(
             ssrc, kind, &track_id, &mid, None, None,
-            0, // Undeclared SSRC is always for the first transceiver
+            id, // Undeclared SSRC is always for the first transceiver
         );
 
-        self.emit_on_open(now, 0, track_id, stream_id, ssrc, None);
+        self.emit_on_open(now, id, track_id, stream_id, ssrc, None);
         true
     }
 
@@ -514,19 +512,15 @@ impl<'a> InterceptorHandler<'a> {
 
         // If rtp header extension has valid mid, find receiver based on mid, instead of rid,
         // since rid is not unique across m= lines
-        let Some((id, transceiver)) =
-            self.rtp_transceivers
-                .iter_mut()
-                .enumerate()
-                .find(|(_, transceiver)| {
-                    transceiver
-                        .mid()
-                        .as_deref()
-                        .is_some_and(|t_mid| t_mid == mid)
-                })
-        else {
+        let Some(transceiver) = self.rtp_transceivers.iter_mut().find(|transceiver| {
+            transceiver
+                .mid()
+                .as_deref()
+                .is_some_and(|t_mid| t_mid == mid)
+        }) else {
             return false;
         };
+        let id = transceiver.id();
 
         // Get kind before borrowing receiver mutably
         let kind = transceiver.kind();

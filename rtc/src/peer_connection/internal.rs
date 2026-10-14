@@ -7,7 +7,7 @@ use crate::peer_connection::handler::interceptor::InterceptorHandlerContext;
 use crate::peer_connection::handler::srtp::SrtpHandlerContext;
 use crate::peer_connection::sdp::{
     MediaSection, PopulateSdpParams, add_candidates_to_media_descriptions, get_by_mid,
-    get_peer_direction, get_rids, have_data_channel, is_ext_map_allow_mixed_set,
+    get_peer_direction, get_rids, have_data_channel, is_ext_map_allow_mixed_set, is_rejected,
     rtp_extensions_from_media_description, track_details_from_sdp,
 };
 use crate::peer_connection::state::signaling_state::check_next_signaling_state;
@@ -22,7 +22,7 @@ use crate::rtp_transceiver::rtp_sender::rtp_coding_parameters::{
     RTCRtpCodingParameters, RTCRtpFecParameters, RTCRtpRtxParameters,
 };
 use crate::rtp_transceiver::rtp_sender::rtp_encoding_parameters::RTCRtpEncodingParameters;
-use crate::rtp_transceiver::{PayloadType, RTCRtpTransceiverDirection, RTCRtpTransceiverId};
+use crate::rtp_transceiver::{PayloadType, RTCRtpTransceiverDirection, RTCRtpTransceiverId, SSRC};
 use crate::statistics::accumulator::IceCandidateAccumulator;
 use ::sdp::description::session::*;
 use ::sdp::util::ConnectionRole;
@@ -187,6 +187,7 @@ impl RTCPeerConnection {
             pipeline_context,
             data_channels: DataChannelRegistry::new(),
             rtp_transceivers: Vec::new(),
+            next_transceiver_id: 0,
             greater_mid: -1,
             sdp_origin: Origin::default(),
             last_offer: String::new(),
@@ -304,6 +305,19 @@ impl RTCPeerConnection {
                         continue;
                     }
 
+                    // zenoh-web patch: a rejected m-line stays rejected, in its place. Its
+                    // transceiver is stopped (by the rejection or before it) or already removed;
+                    // when we offer, a new transceiver may recycle it (below).
+                    if is_rejected(media) {
+                        media_sections.push(MediaSection {
+                            mid: mid_value.to_owned(),
+                            transceiver_index: usize::MAX,
+                            rejected_kind: Some(media.media_name.media.clone()),
+                            ..Default::default()
+                        });
+                        continue;
+                    }
+
                     let kind = RtpCodecKind::from(media.media_name.media.as_str());
                     let direction = get_peer_direction(media);
                     if kind == RtpCodecKind::Unspecified
@@ -339,6 +353,18 @@ impl RTCPeerConnection {
             let already_matched: HashSet<String> =
                 media_sections.iter().map(|s| s.mid.clone()).collect();
 
+            // zenoh-web patch, RFC 9429 5.2.2: a new transceiver recycles a rejected m-line
+            // whose transceiver is gone, under its own mid, before any is appended
+            let mut recyclable = media_sections
+                .iter()
+                .enumerate()
+                .filter(|(_, section)| {
+                    section.rejected_kind.is_some()
+                        && RTCPeerConnection::find_by_mid(&section.mid, &self.rtp_transceivers)
+                            .is_none()
+                })
+                .map(|(position, _)| position)
+                .collect::<VecDeque<_>>();
             for (i, t) in self.rtp_transceivers.iter_mut().enumerate() {
                 if let Some(mid) = t.mid().clone() {
                     if already_matched.contains(&mid) {
@@ -349,11 +375,18 @@ impl RTCPeerConnection {
                         sender.set_negotiated();
                     }
 
-                    media_sections.push(MediaSection {
+                    let section = MediaSection {
                         mid,
                         transceiver_index: i,
                         ..Default::default()
-                    });
+                    };
+                    if !t.stopped()
+                        && let Some(position) = recyclable.pop_front()
+                    {
+                        media_sections[position] = section;
+                    } else {
+                        media_sections.push(section);
+                    }
                 }
             }
 
@@ -676,11 +709,95 @@ impl RTCPeerConnection {
     /// caller of this method should hold `self.mu` lock
     pub(super) fn add_rtp_transceiver(
         &mut self,
-        t: RTCRtpTransceiverInternal,
+        mut t: RTCRtpTransceiverInternal,
     ) -> RTCRtpTransceiverId {
+        // zenoh-web patch: a stable id, not the position: stopped transceivers are removed
+        // (`remove_stopped_transceivers`), which would rename every one after them.
+        let id = self.next_transceiver_id;
+        self.next_transceiver_id += 1;
+        t.set_id(id);
         self.rtp_transceivers.push(t);
         self.trigger_negotiation_needed();
-        self.rtp_transceivers.len() - 1
+        id
+    }
+
+    /// zenoh-web patch: stops the transceiver at `index` (its sender's and receiver's streams
+    /// unbind) and frees what those streams held: their stats and SRTP state.
+    pub(crate) fn stop_transceiver(&mut self, index: usize) -> Result<()> {
+        let transceiver = &mut self.rtp_transceivers[index];
+        if transceiver.stopped() {
+            return Ok(());
+        }
+        let (id, (local, remote)) = (transceiver.id(), transceiver.ssrcs());
+        transceiver.stop(&self.media_engine, &mut self.interceptor)?;
+        self.release_streams(id, &local, &remote);
+        Ok(())
+    }
+
+    /// zenoh-web patch: frees the stats and SRTP state of transceiver `id`'s ended streams:
+    /// those it sent on `local` SSRCs (all its outbound streams, if any are named) and received
+    /// on `remote` ones (all its inbound streams, if any are named).
+    pub(crate) fn release_streams(
+        &mut self,
+        id: RTCRtpTransceiverId,
+        local: &[SSRC],
+        remote: &[SSRC],
+    ) {
+        let stats = &mut self.pipeline_context.stats;
+        let mut local = local.to_vec();
+        let mut remote = remote.to_vec();
+        if !local.is_empty() {
+            local.extend(stats.remove_outbound_rtp_streams(id));
+        }
+        if !remote.is_empty() {
+            remote.extend(stats.remove_inbound_rtp_streams(id));
+        }
+        stats.cleanup_unreferenced_codecs();
+
+        let srtp = &mut self.pipeline_context.srtp_handler_context;
+        if let Some(context) = srtp.local_srtp_context.as_mut() {
+            for &ssrc in &local {
+                context.remove_ssrc(ssrc);
+            }
+        }
+        if let Some(context) = srtp.remote_srtp_context.as_mut() {
+            for &ssrc in &remote {
+                context.remove_ssrc(ssrc);
+            }
+        }
+    }
+
+    /// zenoh-web patch, W3C webrtc 4.4.1.6 ("set the session description", answer): a stopped
+    /// transceiver whose m-line the completed negotiation rejected (or dropped) is removed from
+    /// the connection's set of transceivers. Without this every stopped transceiver, its sender
+    /// and receiver stayed for the life of the connection. Its m-line stays in later
+    /// descriptions as a rejected section until a new transceiver recycles it.
+    pub(super) fn remove_stopped_transceivers(&mut self) {
+        let live = |desc: Option<&RTCSessionDescription>, mid: &str| {
+            desc.and_then(|desc| desc.parsed.as_ref())
+                .is_some_and(|parsed| {
+                    parsed.media_descriptions.iter().any(|media| {
+                        get_mid_value(media).is_some_and(|m| m == mid)
+                            && media.media_name.port.value != 0
+                    })
+                })
+        };
+        let (local, remote) = (
+            self.current_local_description.as_ref(),
+            self.current_remote_description.as_ref(),
+        );
+        self.rtp_transceivers.retain(|transceiver| {
+            !transceiver.stopped()
+                || transceiver
+                    .mid()
+                    .as_ref()
+                    .is_some_and(|mid| live(local, mid) && live(remote, mid))
+        });
+    }
+
+    /// The position of transceiver `id` in `rtp_transceivers`.
+    pub(crate) fn transceiver_index(&self, id: RTCRtpTransceiverId) -> Option<usize> {
+        self.rtp_transceivers.iter().position(|t| t.id() == id)
     }
 
     /// Undoes the transceiver changes made by an offer/answer transaction that is being rolled
@@ -711,7 +828,7 @@ impl RTCPeerConnection {
         for i in (0..self.rtp_transceivers.len()).rev() {
             let t = &self.rtp_transceivers[i];
             if t.created_by_remote_description() && t.sender().is_none() {
-                self.rtp_transceivers[i].stop(&self.media_engine, &mut self.interceptor)?;
+                self.stop_transceiver(i)?;
                 self.rtp_transceivers.remove(i);
             }
         }
@@ -773,7 +890,8 @@ impl RTCPeerConnection {
             RTCRtpTransceiverId,
         )> = Vec::new();
 
-        for (transceiver_id, transceiver) in self.rtp_transceivers.iter_mut().enumerate() {
+        for transceiver in self.rtp_transceivers.iter_mut() {
+            let transceiver_id = transceiver.id();
             // Get kind and mid before mutable borrow of sender
             let kind = transceiver.kind();
             let mid = transceiver.mid().clone().unwrap_or_default();

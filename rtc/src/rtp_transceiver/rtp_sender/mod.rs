@@ -228,6 +228,9 @@ pub use set_parameter_options::RTCSetParameterOptions;
 /// [W3C]: https://www.w3.org/TR/webrtc/#rtcrtpsender-interface
 pub struct RTCRtpSender<'a> {
     pub(crate) id: RTCRtpSenderId,
+    /// zenoh-web patch: the transceiver's position, resolved from `id` when the handle was made
+    /// (the mutable borrow keeps it valid: nothing can be added or removed meanwhile)
+    pub(crate) index: usize,
     pub(crate) peer_connection: &'a mut RTCPeerConnection,
 }
 
@@ -258,7 +261,7 @@ impl RTCRtpSender<'_> {
         // negotiation — the point at which the transceiver acquires a mid. Before that the slot
         // is null, which is what the spec means by "prior to construction of the
         // `RTCDtlsTransport` object".
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .mid()
             .as_ref()?;
 
@@ -270,7 +273,7 @@ impl RTCRtpSender<'_> {
     pub fn track(&self) -> &MediaStreamTrack {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .sender()
             .as_ref()
             .unwrap()
@@ -285,7 +288,7 @@ impl RTCRtpSender<'_> {
     pub fn get_capabilities(&self, kind: RtpCodecKind) -> Option<RTCRtpCapabilities> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .sender()
             .as_ref()
             .unwrap()
@@ -311,7 +314,7 @@ impl RTCRtpSender<'_> {
     ) -> Result<()> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .sender_mut()
             .as_mut()
             .unwrap()
@@ -325,7 +328,7 @@ impl RTCRtpSender<'_> {
     pub fn get_parameters(&mut self) -> &RTCRtpSendParameters {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .sender_mut()
             .as_mut()
             .unwrap()
@@ -351,7 +354,7 @@ impl RTCRtpSender<'_> {
     pub fn replace_track(&mut self, track: MediaStreamTrack) -> Result<()> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .sender_mut()
             .as_mut()
             .unwrap()
@@ -366,7 +369,7 @@ impl RTCRtpSender<'_> {
     pub fn set_streams(&mut self, streams: Vec<MediaStreamId>) {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
-        self.peer_connection.rtp_transceivers[self.id.0]
+        self.peer_connection.rtp_transceivers[self.index]
             .sender_mut()
             .as_mut()
             .unwrap()
@@ -392,7 +395,7 @@ impl RTCRtpSender<'_> {
         // the direction won't be changed too, so, unwrap() here is safe.
 
         let (sender, media_engine) = (
-            self.peer_connection.rtp_transceivers[self.id.0]
+            self.peer_connection.rtp_transceivers[self.index]
                 .sender_mut()
                 .as_mut()
                 .unwrap(),
@@ -489,7 +492,7 @@ impl RTCRtpSender<'_> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized and
         // the direction won't be changed too, so, unwrap() here is safe.
 
-        let sender = self.peer_connection.rtp_transceivers[self.id.0]
+        let sender = self.peer_connection.rtp_transceivers[self.index]
             .sender_mut()
             .as_mut()
             .unwrap();

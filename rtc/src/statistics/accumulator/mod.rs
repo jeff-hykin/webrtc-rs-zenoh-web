@@ -828,6 +828,50 @@ impl RTCStatsAccumulator {
         }
     }
 
+    /// zenoh-web patch: removes transceiver `id`'s outbound stream accumulators (its sender's
+    /// streams ended), returning every SSRC they named (primary and RTX).
+    pub(crate) fn remove_outbound_rtp_streams(&mut self, id: RTCRtpTransceiverId) -> Vec<SSRC> {
+        let mut removed = vec![];
+        self.outbound_rtp_streams.retain(|&ssrc, stream| {
+            if stream.transceiver_id != id {
+                return true;
+            }
+            removed.push(ssrc);
+            removed.extend(stream.rtx_ssrc);
+            false
+        });
+        self.forget_repair_ssrcs(&removed);
+        removed
+    }
+
+    /// zenoh-web patch: removes transceiver `id`'s inbound stream accumulators (its receiver's
+    /// streams ended), returning every SSRC they named (primary, RTX and FEC).
+    pub(crate) fn remove_inbound_rtp_streams(&mut self, id: RTCRtpTransceiverId) -> Vec<SSRC> {
+        let mut removed = vec![];
+        self.inbound_rtp_streams.retain(|&ssrc, stream| {
+            if stream.transceiver_id != id {
+                return true;
+            }
+            removed.push(ssrc);
+            removed.extend(stream.rtx_ssrc);
+            removed.extend(stream.fec_ssrc);
+            false
+        });
+        self.forget_repair_ssrcs(&removed);
+        removed
+    }
+
+    /// Drops the RTX/FEC lookups of removed streams.
+    fn forget_repair_ssrcs(&mut self, removed: &[SSRC]) {
+        if removed.is_empty() {
+            return;
+        }
+        self.rtx_ssrc_to_primary
+            .retain(|rtx, primary| !removed.contains(rtx) && !removed.contains(primary));
+        self.fec_ssrc_to_primary
+            .retain(|fec, primary| !removed.contains(fec) && !removed.contains(primary));
+    }
+
     /// Removes codecs that are no longer referenced by any RTP stream.
     ///
     /// Per W3C spec, when there is no longer any reference to an RTCCodecStats,

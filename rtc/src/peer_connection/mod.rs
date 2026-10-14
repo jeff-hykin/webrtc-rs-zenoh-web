@@ -273,7 +273,8 @@ use crate::peer_connection::sdp::session_description::RTCSessionDescription;
 use crate::peer_connection::sdp::{
     extract_fingerprint, extract_ice_details, get_application_media,
     get_application_media_section_max_message_size, get_application_media_section_sctp_port,
-    get_mid_value, get_peer_direction, has_ice_trickle_option, is_lite_set, sdp_type::RTCSdpType,
+    get_mid_value, get_peer_direction, has_ice_trickle_option, is_lite_set, is_rejected,
+    sdp_type::RTCSdpType,
     update_sdp_origin,
 };
 use crate::peer_connection::state::RTCIceGatheringState;
@@ -303,6 +304,7 @@ use crate::rtp_transceiver::rtp_sender::internal::RTCRtpSenderInternal;
 use crate::rtp_transceiver::rtp_sender::rtp_codec::{
     CodecMatch, RtpCodecKind, codec_parameters_fuzzy_search,
 };
+use crate::rtp_transceiver::internal::sender_ssrcs;
 use crate::rtp_transceiver::{
     RTCRtpReceiverId, RTCRtpSenderId, RTCRtpTransceiver, RTCRtpTransceiverId,
     RTCRtpTransceiverInit, internal::RTCRtpTransceiverInternal,
@@ -747,6 +749,8 @@ pub struct RTCPeerConnection {
     pub(crate) pipeline_context: PipelineContext,
     pub(crate) data_channels: DataChannelRegistry,
     pub(super) rtp_transceivers: Vec<RTCRtpTransceiverInternal>,
+    /// zenoh-web patch: the next transceiver id; ids are never reused (see `add_rtp_transceiver`)
+    next_transceiver_id: RTCRtpTransceiverId,
 
     greater_mid: isize,
     sdp_origin: Origin,
@@ -1181,6 +1185,8 @@ impl RTCPeerConnection {
 
                 let i = match RTCPeerConnection::find_by_mid(mid_value, &self.rtp_transceivers) {
                     Some(i) => i,
+                    // zenoh-web patch: the rejected m-line of a removed transceiver
+                    None if is_rejected(media) => continue,
                     None => return Err(Error::ErrPeerConnTransceiverMidNil),
                 };
 
@@ -1239,6 +1245,8 @@ impl RTCPeerConnection {
                 }
                 self.start_rtp(remote_description)?;
             }
+            // zenoh-web patch: negotiation complete
+            self.remove_stopped_transceivers();
         }
 
         self.ice_transport_mut().ice_gathering_state = RTCIceGatheringState::Gathering;
@@ -1398,6 +1406,18 @@ impl RTCPeerConnection {
                             continue;
                         }
 
+                        // zenoh-web patch, W3C webrtc 4.4.1.6: a rejected m-line stops its
+                        // transceiver (removed once the answer is applied); one with no
+                        // transceiver (already removed) creates none.
+                        if is_rejected(media) {
+                            if let Some(i) =
+                                RTCPeerConnection::find_by_mid(mid_value, &self.rtp_transceivers)
+                            {
+                                self.stop_transceiver(i)?;
+                            }
+                            continue;
+                        }
+
                         let kind = RtpCodecKind::from(media.media_name.media.as_str());
                         let direction = get_peer_direction(media);
                         if kind == RtpCodecKind::Unspecified
@@ -1410,8 +1430,7 @@ impl RTCPeerConnection {
                             RTCPeerConnection::find_by_mid(mid_value, &self.rtp_transceivers)
                         {
                             if direction == RTCRtpTransceiverDirection::Inactive {
-                                self.rtp_transceivers[i]
-                                    .stop(&self.media_engine, &mut self.interceptor)?;
+                                self.stop_transceiver(i)?;
                             }
                             Some(&mut self.rtp_transceivers[i])
                         } else {
@@ -1500,6 +1519,17 @@ impl RTCPeerConnection {
                         };
 
                         if media.is_webrtc_datachannel() {
+                            continue;
+                        }
+
+                        // zenoh-web patch: the remote rejected the m-line: stop its transceiver
+                        // (if it still has one), removed below now that negotiation is complete
+                        if is_rejected(media) {
+                            if let Some(i) =
+                                RTCPeerConnection::find_by_mid(mid_value, &self.rtp_transceivers)
+                            {
+                                self.stop_transceiver(i)?;
+                            }
                             continue;
                         }
 
@@ -1639,6 +1669,10 @@ impl RTCPeerConnection {
                     )?;
                 }
                 self.start_rtp(remote_description)?;
+            }
+            if we_offer {
+                // zenoh-web patch: negotiation complete
+                self.remove_stopped_transceivers();
             }
         }
 
@@ -2035,9 +2069,8 @@ impl RTCPeerConnection {
     pub fn get_senders(&self) -> impl Iterator<Item = RTCRtpSenderId> + use<'_> {
         self.rtp_transceivers
             .iter()
-            .enumerate()
-            .filter(|(_, transceiver)| transceiver.direction().has_send())
-            .map(|(id, _)| RTCRtpSenderId(id))
+            .filter(|transceiver| transceiver.direction().has_send())
+            .map(|transceiver| RTCRtpSenderId(transceiver.id()))
     }
 
     /// Returns an iterator over the `RTCRtpReceiver` objects.
@@ -2051,9 +2084,8 @@ impl RTCPeerConnection {
     pub fn get_receivers(&self) -> impl Iterator<Item = RTCRtpReceiverId> + use<'_> {
         self.rtp_transceivers
             .iter()
-            .enumerate()
-            .filter(|(_, transceiver)| transceiver.direction().has_recv())
-            .map(|(id, _)| RTCRtpReceiverId(id))
+            .filter(|transceiver| transceiver.direction().has_recv())
+            .map(|transceiver| RTCRtpReceiverId(transceiver.id()))
     }
 
     /// Returns an iterator over the `RTCRtpTransceiver` objects.
@@ -2064,8 +2096,8 @@ impl RTCPeerConnection {
     /// # Specification
     ///
     /// See [getTransceivers](https://www.w3.org/TR/webrtc/#dom-peerconnection-gettranseceivers)
-    pub fn get_transceivers(&self) -> impl Iterator<Item = RTCRtpTransceiverId> {
-        0..self.rtp_transceivers.len()
+    pub fn get_transceivers(&self) -> impl Iterator<Item = RTCRtpTransceiverId> + use<'_> {
+        self.rtp_transceivers.iter().map(|transceiver| transceiver.id())
     }
 
     /// Adds a media track to the peer connection.
@@ -2097,7 +2129,8 @@ impl RTCPeerConnection {
         let send_encodings = self.send_encodings_from_track(&track);
         let (track, send_encodings, codec_preferences) =
             self.normalize_sender_track(track, send_encodings)?;
-        for (id, transceiver) in self.rtp_transceivers.iter_mut().enumerate() {
+        for transceiver in self.rtp_transceivers.iter_mut() {
+            let id = transceiver.id();
             if !transceiver.stopped()
                 && transceiver.kind() == track.kind()
                 && transceiver.sender().is_none()
@@ -2160,18 +2193,18 @@ impl RTCPeerConnection {
             return Err(Error::ErrConnectionClosed);
         }
 
-        if sender_id.0 >= self.rtp_transceivers.len() {
+        let Some(index) = self.transceiver_index(sender_id.0) else {
             return Err(Error::ErrRTPSenderNotExisted);
-        }
+        };
 
         // This also happens in `set_sending_track` but we need to make sure we do this
         // before we call sender.stop to avoid a race condition when removing tracks and
         // generating offers.
-        let has_recv = self.rtp_transceivers[sender_id.0].direction().has_recv();
-        self.rtp_transceivers[sender_id.0]
+        let has_recv = self.rtp_transceivers[index].direction().has_recv();
+        self.rtp_transceivers[index]
             .set_direction(RTCRtpTransceiverDirection::from_send_recv(false, has_recv));
 
-        if let Some(sender) = self.rtp_transceivers[sender_id.0].sender_mut()
+        if let Some(sender) = self.rtp_transceivers[index].sender_mut()
             && sender
                 .stop(&self.media_engine, &mut self.interceptor)
                 .is_ok()
@@ -2179,7 +2212,10 @@ impl RTCPeerConnection {
             self.trigger_negotiation_needed();
         }
 
-        self.rtp_transceivers[sender_id.0].sender_mut().take();
+        // zenoh-web patch: the sender's streams are over; free what they held
+        if let Some(sender) = self.rtp_transceivers[index].sender_mut().take() {
+            self.release_streams(sender_id.0, &sender_ssrcs(&sender), &[]);
+        }
 
         Ok(())
     }
@@ -2364,12 +2400,13 @@ impl RTCPeerConnection {
     ///
     /// [`RTCRtpSender`]: crate::rtp_transceiver::rtp_sender::RTCRtpSender
     pub fn rtp_sender(&mut self, id: RTCRtpSenderId) -> Option<RTCRtpSender<'_>> {
-        if id.0 < self.rtp_transceivers.len()
-            && self.rtp_transceivers[id.0].direction().has_send()
-            && self.rtp_transceivers[id.0].sender().is_some()
+        if let Some(index) = self.transceiver_index(id.0)
+            && self.rtp_transceivers[index].direction().has_send()
+            && self.rtp_transceivers[index].sender().is_some()
         {
             Some(RTCRtpSender {
                 id,
+                index,
                 peer_connection: self,
             })
         } else {
@@ -2382,12 +2419,13 @@ impl RTCPeerConnection {
     ///
     /// [`RTCRtpReceiver`]: crate::rtp_transceiver::rtp_receiver::RTCRtpReceiver
     pub fn rtp_receiver(&mut self, id: RTCRtpReceiverId) -> Option<RTCRtpReceiver<'_>> {
-        if id.0 < self.rtp_transceivers.len()
-            && self.rtp_transceivers[id.0].direction().has_recv()
-            && self.rtp_transceivers[id.0].receiver().is_some()
+        if let Some(index) = self.transceiver_index(id.0)
+            && self.rtp_transceivers[index].direction().has_recv()
+            && self.rtp_transceivers[index].receiver().is_some()
         {
             Some(RTCRtpReceiver {
                 id,
+                index,
                 peer_connection: self,
             })
         } else {
@@ -2400,14 +2438,11 @@ impl RTCPeerConnection {
     ///
     /// [`RTCRtpTransceiver`]: crate::rtp_transceiver::RTCRtpTransceiver
     pub fn rtp_transceiver(&mut self, id: RTCRtpTransceiverId) -> Option<RTCRtpTransceiver<'_>> {
-        if id < self.rtp_transceivers.len() {
-            Some(RTCRtpTransceiver {
-                id,
-                peer_connection: self,
-            })
-        } else {
-            None
-        }
+        self.transceiver_index(id).map(|index| RTCRtpTransceiver {
+            id,
+            index,
+            peer_connection: self,
+        })
     }
 
     /// Returns a snapshot of accumulated statistics.

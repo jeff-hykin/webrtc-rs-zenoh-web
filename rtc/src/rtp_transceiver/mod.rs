@@ -218,6 +218,9 @@ pub struct RTCRtpTransceiverInit {
 /// See [RTCRtpTransceiver](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver) in the W3C WebRTC specification.
 pub struct RTCRtpTransceiver<'a> {
     pub(crate) id: RTCRtpTransceiverId,
+    /// zenoh-web patch: the transceiver's position, resolved from `id` when the handle was made
+    /// (the mutable borrow keeps it valid: nothing can be added or removed meanwhile)
+    pub(crate) index: usize,
     pub(crate) peer_connection: &'a mut RTCPeerConnection,
 }
 
@@ -232,8 +235,8 @@ impl RTCRtpTransceiver<'_> {
     /// See [RTCRtpTransceiver.mid](https://www.w3.org/TR/webrtc/#dom-rtptransceiver-mid).
     pub fn mid(&self) -> &Option<String> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        self.peer_connection.rtp_transceivers[self.id].mid()
+        // so, [self.index] here is safe.
+        self.peer_connection.rtp_transceivers[self.index].mid()
     }
 
     /// Returns the id of this transceiver's [`RTCRtpSender`], if it has one.
@@ -241,8 +244,8 @@ impl RTCRtpTransceiver<'_> {
     /// [`RTCRtpSender`]: crate::rtp_transceiver::rtp_sender::RTCRtpSender
     pub fn sender(&self) -> Option<RTCRtpSenderId> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        if self.peer_connection.rtp_transceivers[self.id]
+        // so, [self.index] here is safe.
+        if self.peer_connection.rtp_transceivers[self.index]
             .sender()
             .is_some()
         {
@@ -257,8 +260,8 @@ impl RTCRtpTransceiver<'_> {
     /// [`RTCRtpReceiver`]: crate::rtp_transceiver::rtp_receiver::RTCRtpReceiver
     pub fn receiver(&self) -> Option<RTCRtpReceiverId> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        if self.peer_connection.rtp_transceivers[self.id]
+        // so, [self.index] here is safe.
+        if self.peer_connection.rtp_transceivers[self.index]
             .receiver()
             .is_some()
         {
@@ -277,8 +280,8 @@ impl RTCRtpTransceiver<'_> {
     /// See [RTCRtpTransceiver.direction](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-direction).
     pub fn direction(&self) -> RTCRtpTransceiverDirection {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        self.peer_connection.rtp_transceivers[self.id].direction()
+        // so, [self.index] here is safe.
+        self.peer_connection.rtp_transceivers[self.index].direction()
     }
 
     /// Sets the preferred direction of this transceiver.
@@ -290,12 +293,12 @@ impl RTCRtpTransceiver<'_> {
     /// See [RTCRtpTransceiver.direction](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-direction).
     pub fn set_direction(&mut self, direction: RTCRtpTransceiverDirection) {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        let previous_direction = self.peer_connection.rtp_transceivers[self.id].direction();
-        self.peer_connection.rtp_transceivers[self.id].set_direction(direction);
+        // so, [self.index] here is safe.
+        let previous_direction = self.peer_connection.rtp_transceivers[self.index].direction();
+        self.peer_connection.rtp_transceivers[self.index].set_direction(direction);
         // Compare the effective direction after the setter (rather than the requested value) so
         // any future normalization inside `set_direction` cannot bypass this check.
-        let current_direction = self.peer_connection.rtp_transceivers[self.id].direction();
+        let current_direction = self.peer_connection.rtp_transceivers[self.index].direction();
 
         // https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-direction
         // The direction setter is a no-op when the new direction equals the current one;
@@ -320,8 +323,8 @@ impl RTCRtpTransceiver<'_> {
     /// See [RTCRtpTransceiver.currentDirection](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-currentdirection).
     pub fn current_direction(&self) -> RTCRtpTransceiverDirection {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        self.peer_connection.rtp_transceivers[self.id].current_direction()
+        // so, [self.index] here is safe.
+        self.peer_connection.rtp_transceivers[self.index].current_direction()
     }
 
     /// Irreversibly stops the transceiver.
@@ -338,11 +341,8 @@ impl RTCRtpTransceiver<'_> {
     /// See [RTCRtpTransceiver.stop()](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-stop).
     pub fn stop(&mut self) -> Result<()> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        self.peer_connection.rtp_transceivers[self.id].stop(
-            &self.peer_connection.media_engine,
-            &mut self.peer_connection.interceptor,
-        )
+        // so, [self.index] here is safe.
+        self.peer_connection.stop_transceiver(self.index)
     }
 
     /// Sets the preferred codec list for this transceiver.
@@ -359,8 +359,8 @@ impl RTCRtpTransceiver<'_> {
     /// See [RTCRtpTransceiver.setCodecPreferences()](https://www.w3.org/TR/webrtc/#dom-rtcrtptransceiver-setcodecpreferences).
     pub fn set_codec_preferences(&mut self, codecs: Vec<RTCRtpCodecParameters>) -> Result<()> {
         // peer_connection is mutable borrow, its rtp_transceivers won't be resized,
-        // so, [self.id] here is safe.
-        self.peer_connection.rtp_transceivers[self.id]
+        // so, [self.index] here is safe.
+        self.peer_connection.rtp_transceivers[self.index]
             .set_codec_preferences(codecs, &self.peer_connection.media_engine)
     }
 }
@@ -478,5 +478,195 @@ mod tests {
             0,
             "setting the same direction must not trigger negotiation-needed",
         );
+    }
+
+    /// A VP8 track sending on `ssrc`, as zenoh-gateway makes one per subscription.
+    fn video_track(name: &str, ssrc: u32) -> crate::media_stream::MediaStreamTrack {
+        use crate::rtp_transceiver::rtp_sender::{
+            RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters,
+        };
+        crate::media_stream::MediaStreamTrack::new(
+            format!("stream-{name}"),
+            format!("track-{name}"),
+            format!("label-{name}"),
+            RtpCodecKind::Video,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
+                    ..Default::default()
+                },
+                codec: RTCRtpCodec {
+                    mime_type: "video/VP8".to_owned(),
+                    clock_rate: 90000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+        )
+    }
+
+    /// A local SRTP context holding state for `ssrc`, as one would after sending on it.
+    fn srtp_context_with(ssrc: u32) -> srtp::context::Context {
+        use shared::marshal::Marshal;
+        let profile = srtp::protection_profile::ProtectionProfile::Aes128CmHmacSha1_80;
+        let provider = crypto::default_provider().expect("a built-in crypto provider");
+        let mut context = srtp::context::Context::new(
+            &vec![0; profile.key_len()],
+            &vec![0; profile.salt_len()],
+            profile,
+            None,
+            None,
+            provider.crypto(),
+        )
+        .expect("srtp context");
+        let packet = rtp::Packet {
+            header: rtp::Header {
+                version: 2,
+                ssrc,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::from_static(b"frame"),
+        };
+        context
+            .encrypt_rtp(&packet.marshal().expect("marshal"))
+            .expect("encrypt");
+        context
+    }
+
+    /// zenoh-web patch: zenoh-gateway's pattern over one long-lived connection. Each round the
+    /// browser adds a recvonly transceiver and offers, the gateway adds a track and answers;
+    /// then the browser stops the transceiver and offers again (its m-line rejected). Once that
+    /// negotiation completes, both sides must have removed the stopped transceiver, and the
+    /// gateway the stats and SRTP state of the stream it sent.
+    #[test]
+    fn stopped_transceivers_are_removed_once_negotiation_completes() {
+        let mut browser = build_pc();
+        let mut gateway = build_pc();
+
+        for round in 0..10 {
+            let browser_tid = browser
+                .add_transceiver_from_kind(RtpCodecKind::Video, None)
+                .expect("add browser transceiver");
+            let sender_id = gateway
+                .add_track(video_track(&format!("{round}"), 1000 + round))
+                .expect("add track");
+            negotiate(&mut browser, &mut gateway);
+
+            let ssrc = gateway
+                .rtp_sender(sender_id)
+                .expect("the subscription's sender")
+                .track()
+                .ssrcs()
+                .next()
+                .expect("an ssrc");
+            assert_eq!(gateway.pipeline_context.stats.outbound_rtp_streams.len(), 1);
+            gateway.pipeline_context.srtp_handler_context.local_srtp_context =
+                Some(srtp_context_with(ssrc));
+
+            browser
+                .rtp_transceiver(browser_tid)
+                .expect("browser transceiver")
+                .stop()
+                .expect("stop");
+            negotiate(&mut browser, &mut gateway);
+
+            assert_eq!(browser.rtp_transceivers.len(), 0, "round {round}: browser");
+            assert_eq!(gateway.rtp_transceivers.len(), 0, "round {round}: gateway");
+            assert!(gateway.rtp_sender(sender_id).is_none(), "a removed sender is gone");
+            assert!(
+                gateway.pipeline_context.stats.outbound_rtp_streams.is_empty(),
+                "round {round}: the stopped sender's stats must go"
+            );
+            let srtp = gateway
+                .pipeline_context
+                .srtp_handler_context
+                .local_srtp_context
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                srtp.ssrc_state_counts(),
+                (0, 0),
+                "round {round}: the stopped sender's SRTP state must go"
+            );
+        }
+    }
+
+    /// zenoh-web patch: the rejected m-line of a removed transceiver keeps its place in later
+    /// descriptions, and the next new transceiver recycles it (RFC 9429 5.2.2) under a new mid
+    /// rather than growing the description.
+    #[test]
+    fn a_removed_transceivers_m_line_is_recycled() {
+        let mut offerer = build_pc();
+        let mut answerer = build_pc();
+
+        let first = offerer
+            .add_transceiver_from_kind(RtpCodecKind::Video, None)
+            .expect("add");
+        offerer
+            .add_transceiver_from_kind(RtpCodecKind::Video, None)
+            .expect("add");
+        negotiate(&mut offerer, &mut answerer);
+
+        offerer.rtp_transceiver(first).expect("first").stop().expect("stop");
+        negotiate(&mut offerer, &mut answerer);
+        assert_eq!(offerer.rtp_transceivers.len(), 1);
+        assert_eq!(answerer.rtp_transceivers.len(), 1);
+
+        // the answerer offers now: the removed transceiver's m-line stays, rejected
+        let offer = answerer.create_offer(None).expect("offer");
+        let media = &offer.parsed.as_ref().unwrap().media_descriptions;
+        assert_eq!(media.len(), 2);
+        assert_eq!(media[0].media_name.port.value, 0, "still rejected, in its place");
+        answerer
+            .set_local_description(Instant::now(), offer.clone())
+            .expect("set local");
+        offerer
+            .set_remote_description(Instant::now(), offer)
+            .expect("set remote");
+        let answer = offerer.create_answer(None).expect("answer");
+        offerer
+            .set_local_description(Instant::now(), answer.clone())
+            .expect("set local");
+        answerer
+            .set_remote_description(Instant::now(), answer)
+            .expect("set remote");
+
+        // a new transceiver takes the rejected slot
+        offerer
+            .add_transceiver_from_kind(RtpCodecKind::Video, None)
+            .expect("add");
+        let offer = offerer.create_offer(None).expect("offer");
+        let media = &offer.parsed.as_ref().unwrap().media_descriptions;
+        assert_eq!(media.len(), 2, "the rejected m-line is recycled, not appended to");
+        assert_ne!(media[0].media_name.port.value, 0);
+        let mids: Vec<_> = media
+            .iter()
+            .map(|m| crate::peer_connection::sdp::get_mid_value(m).unwrap().clone())
+            .collect();
+        assert_ne!(mids[0], mids[1]);
+        assert_ne!(mids[0], "0", "a recycled m-line takes a new mid");
+        negotiate_with(&mut offerer, &mut answerer, offer);
+        assert_eq!(offerer.rtp_transceivers.len(), 2);
+        assert_eq!(answerer.rtp_transceivers.len(), 2);
+    }
+
+    fn negotiate_with(
+        offerer: &mut RTCPeerConnection,
+        answerer: &mut RTCPeerConnection,
+        offer: crate::peer_connection::sdp::RTCSessionDescription,
+    ) {
+        offerer
+            .set_local_description(Instant::now(), offer.clone())
+            .expect("offerer set local");
+        answerer
+            .set_remote_description(Instant::now(), offer)
+            .expect("answerer set remote");
+        let answer = answerer.create_answer(None).expect("create answer");
+        answerer
+            .set_local_description(Instant::now(), answer.clone())
+            .expect("answerer set local");
+        offerer
+            .set_remote_description(Instant::now(), answer)
+            .expect("offerer set remote");
     }
 }
