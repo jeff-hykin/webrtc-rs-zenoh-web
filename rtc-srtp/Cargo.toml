@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "zenoh-web-rtc-srtp"
-version = "0.21.0-zw.4"
+version = "0.21.0-zw.5"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 build = false
 autolib = false

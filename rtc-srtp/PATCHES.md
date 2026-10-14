@@ -12,4 +12,4 @@ Fork of [rtc-srtp](https://crates.io/crates/rtc-srtp) 0.21.0 (webrtc-rs, MIT OR 
 Tests: `src/context/context_test.rs` (search `zenoh-web patch`).
 
 Manifest: example and benchmark removed (`criterion` dev-dependency with them). Versioning: upstream
-version + `-zw.N` (`0.21.0-zw.4`, which follows the fork's shared version).
+version + `-zw.N` (`0.21.0-zw.5`, which follows the fork's shared version).

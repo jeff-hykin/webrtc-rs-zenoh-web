@@ -30,6 +30,11 @@ this repository).
   channel reopened at once no longer gets the dying stream).
 - `0.21.0-zw.4`: `close()` frees the connection (its transceivers held it in a cycle; its data
   channels' `poll()` never ended).
+- `0.21.0-zw.5`: a long-lived connection frees what ends inside it: stopped transceivers are removed
+  once their m-line is rejected (and never bound again: each renegotiation re-bound a stopped
+  sender's NACK buffer), their stats and SRTP state go (new crate `zenoh-web-rtc-srtp`), a closed
+  data channel leaves no stats or event sender (only its own: SCTP reuses stream ids), and an ended
+  stream leaves SCTP's accept queue.
 
 ## Publishing
 
