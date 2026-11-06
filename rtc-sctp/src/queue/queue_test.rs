@@ -1171,3 +1171,74 @@ fn test_pending_queue_remove_stream_clears_selection() {
     pq.remove_stream(5);
     assert_eq!(pq.pop(true, false).map(|c| c.stream_identifier), Some(7), "selection must not stall the queue");
 }
+
+// zenoh-web patch: the priority scheduler (see PendingQueue)
+
+fn stream_chunk(tsn: u32, stream_identifier: u16, unordered: bool, frag: usize) -> ChunkPayloadData {
+    ChunkPayloadData { stream_identifier, ..make_data_chunk(tsn, unordered, frag) }
+}
+
+fn drain_tsns(pq: &mut PendingQueue) -> Vec<u32> {
+    let mut tsns = vec![];
+    while let Some(c) = pq.peek() {
+        let (beginning_fragment, unordered) = (c.beginning_fragment, c.unordered);
+        tsns.push(pq.pop(beginning_fragment, unordered).expect("peeked").tsn);
+    }
+    tsns
+}
+
+#[test]
+fn test_pending_queue_higher_priority_goes_first() {
+    let mut pq = PendingQueue::new();
+    pq.set_stream_priority(7, 512);
+    // bulk on stream 1 (unordered, default priority) queued ahead of an ordered reply on high-priority stream 7
+    for tsn in 0..3 {
+        pq.push(stream_chunk(tsn, 1, true, NO_FRAGMENT));
+    }
+    pq.push(stream_chunk(10, 7, false, NO_FRAGMENT));
+    assert_eq!(drain_tsns(&mut pq), vec![10, 0, 1, 2]);
+    assert_eq!(pq.get_num_bytes(), 0);
+    assert!(pq.is_empty());
+}
+
+#[test]
+fn test_pending_queue_a_message_under_way_finishes_before_a_higher_priority_one() {
+    let mut pq = PendingQueue::new();
+    pq.set_stream_priority(7, 512);
+    pq.push(stream_chunk(0, 1, true, FRAG_BEGIN));
+    pq.push(stream_chunk(1, 1, true, FRAG_MIDDLE));
+    pq.push(stream_chunk(2, 1, true, FRAG_END));
+    pq.push(stream_chunk(3, 1, true, NO_FRAGMENT));
+    // the first fragment goes, then the reply arrives: the message's fragments stay back to back
+    let c = pq.peek().unwrap();
+    let (b, u) = (c.beginning_fragment, c.unordered);
+    assert_eq!(pq.pop(b, u).unwrap().tsn, 0);
+    pq.push(stream_chunk(10, 7, false, NO_FRAGMENT));
+    assert_eq!(drain_tsns(&mut pq), vec![1, 2, 10, 3]);
+}
+
+#[test]
+fn test_pending_queue_a_reprioritized_stream_keeps_its_order() {
+    let mut pq = PendingQueue::new();
+    pq.push(stream_chunk(0, 2, false, NO_FRAGMENT));
+    pq.push(stream_chunk(1, 1, false, NO_FRAGMENT));
+    pq.push(stream_chunk(2, 2, false, NO_FRAGMENT));
+    pq.set_stream_priority(2, 1024);
+    pq.push(stream_chunk(3, 2, false, NO_FRAGMENT));
+    assert_eq!(drain_tsns(&mut pq), vec![0, 2, 3, 1]);
+}
+
+#[test]
+fn test_pending_queue_remove_stream_takes_its_chunks_from_every_lane_and_its_priority() {
+    let mut pq = PendingQueue::new();
+    pq.push(stream_chunk(0, 2, false, NO_FRAGMENT));
+    pq.set_stream_priority(2, 512);
+    pq.push(stream_chunk(1, 2, false, NO_FRAGMENT));
+    pq.push(stream_chunk(2, 1, false, NO_FRAGMENT));
+    assert_eq!(pq.remove_stream(2), 20);
+    assert_eq!(pq.len(), 1);
+    // a new channel reusing the id starts at the default
+    pq.push(stream_chunk(3, 2, false, NO_FRAGMENT));
+    pq.push(stream_chunk(4, 1, false, NO_FRAGMENT));
+    assert_eq!(drain_tsns(&mut pq), vec![2, 3, 4]);
+}

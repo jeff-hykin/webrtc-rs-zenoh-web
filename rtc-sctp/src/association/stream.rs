@@ -369,6 +369,16 @@ impl Stream<'_> {
         }
     }
 
+    /// zenoh-web patch: sets the stream's send priority (higher goes first; the data channel's DCEP priority, RFC 8832
+    /// §5.1: 128 below normal, 256 normal, 512 high, 1024 extra high), see `PendingQueue`.
+    pub fn set_priority(&mut self, priority: u16) -> Result<()> {
+        if !self.association.streams.contains_key(&self.stream_identifier) {
+            return Err(Error::ErrStreamClosed);
+        }
+        self.association.pending_queue.set_stream_priority(self.stream_identifier, priority);
+        Ok(())
+    }
+
     /// buffered_amount returns the number of bytes of data currently queued to be sent over this stream.
     pub fn buffered_amount(&self) -> Result<usize> {
         if let Some(s) = self.association.streams.get(&self.stream_identifier) {

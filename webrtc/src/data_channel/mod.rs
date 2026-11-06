@@ -129,6 +129,11 @@ pub trait DataChannel: crate::sealed::Sealed + Send + Sync + 'static {
     async fn outstanding_bytes(&self) -> Result<usize> {
         Ok(0)
     }
+    /// zenoh-web patch: the priority this channel's sends go at against the other channels' (higher first; DCEP's
+    /// 128 / 256 normal / 512 / 1024), see `rtc`'s `RTCDataChannel::set_priority`. Defaults to doing nothing.
+    async fn set_priority(&self, _priority: u16) -> Result<()> {
+        Ok(())
+    }
     /// Sends raw binary data on this data channel.
     ///
     /// Queues the message and returns; it never waits for the peer to acknowledge. When a
@@ -459,6 +464,14 @@ impl DataChannel for DataChannelImpl {
             .data_channel(self.id)
             .ok_or(Error::ErrDataChannelClosed)?
             .outstanding_bytes())
+    }
+
+    async fn set_priority(&self, priority: u16) -> Result<()> {
+        let mut peer_connection = self.inner.core.lock().await;
+        peer_connection
+            .data_channel(self.id)
+            .ok_or(Error::ErrDataChannelClosed)?
+            .set_priority(priority)
     }
 
     // Documented on `DataChannel::set_buffered_amount_low_threshold`.

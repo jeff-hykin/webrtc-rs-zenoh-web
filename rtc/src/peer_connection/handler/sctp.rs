@@ -186,6 +186,8 @@ impl<'a> SctpHandler<'a> {
                 let (unordered, reliability_type) =
                     ::datachannel::data_channel::DataChannel::get_reliability_params(open.channel_type);
                 stream.set_reliability_params(unordered, reliability_type, open.reliability_parameter)?;
+                // (and the priority it asked for: a high-priority channel's messages go before queued lower ones)
+                stream.set_priority(open.priority)?;
             }
             messages.push(SctpMessage::Inbound(DataChannelMessage {
                 association_handle: ch.0,
@@ -586,6 +588,8 @@ impl<'a>
                                 reliability_type,
                                 data_channel_open.reliability_parameter,
                             )?;
+                            // zenoh-web patch: the channel's priority schedules its stream's sends
+                            stream.set_priority(data_channel_open.priority)?;
 
                             // Out-of-band negotiated channels (W3C WebRTC
                             // `RTCDataChannelInit.negotiated`) only open the SCTP

@@ -393,6 +393,23 @@ impl RTCDataChannel<'_> {
             .unwrap_or(0)
     }
 
+    /// zenoh-web patch: sets the priority this channel's sends are scheduled at against the other channels' (higher
+    /// goes first; RFC 8832's DCEP values: 128 below normal, 256 normal, 512 high, 1024 extra high), in place of the one
+    /// it was opened with. Browsers open every channel at the same priority whatever `RTCDataChannelInit.priority`
+    /// asked (Chrome sends 0), so the side that knows which channels are urgent sets it here.
+    pub fn set_priority(&mut self, priority: u16) -> Result<()> {
+        let dc = self.peer_connection.data_channels.get(&self.id).ok_or(Error::ErrDataChannelClosed)?;
+        let channel = dc.data_channel.as_ref().ok_or(Error::ErrDataChannelClosed)?;
+        let (handle, stream_id) = (channel.association_handle(), channel.stream_identifier());
+        let association = self
+            .peer_connection
+            .sctp_transport_mut()
+            .sctp_associations
+            .get_mut(&sctp::AssociationHandle(handle))
+            .ok_or(Error::ErrDataChannelClosed)?;
+        association.stream(stream_id)?.set_priority(priority)
+    }
+
     /// Closes the data channel.
     ///
     /// Moves the channel to `Closing` and starts the DCEP/SCTP teardown. Closing a channel that
