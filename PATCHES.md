@@ -35,6 +35,9 @@ this repository).
   sender's NACK buffer), their stats and SRTP state go (new crate `zenoh-web-rtc-srtp`), a closed
   data channel leaves no stats or event sender (only its own: SCTP reuses stream ids), and an ended
   stream leaves SCTP's accept queue.
+- `0.21.0-zw.6`: SCTP schedules streams by priority (RFC 8260's priority scheduler): a data channel's
+  priority (its DCEP open, or `set_priority`) puts its messages before queued ones of lower priority;
+  every channel at one priority sends as before.
 
 ## Publishing
 

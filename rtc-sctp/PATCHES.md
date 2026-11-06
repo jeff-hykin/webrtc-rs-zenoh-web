@@ -31,6 +31,11 @@ Fork of [rtc-sctp](https://crates.io/crates/rtc-sctp) 0.21.0 (webrtc-rs, MIT OR 
    streams from `StreamEvent::Opened`), so each data channel a browser opened left 2 bytes queued for
    the life of the association. Change: unregistering a stream removes it from the queue.
 
-Tests for 2–5 are in `src/endpoint/endpoint_test.rs` and `src/queue/queue_test.rs` (search `zenoh-web patch`).
+6. **Streams are scheduled by priority** (`src/queue/pending_queue.rs`, `Stream::set_priority`; RFC 8260 Sec 3.4).
+   Bug: one pending queue for every stream (unordered chunks first): a small urgent message waited behind every chunk
+   already queued on other streams (a gateway's heartbeat replies 200-350 ms behind lidar while the link had no queue).
+   Change: a lane per priority, highest first, each lane upstream's queue; a message under way still finishes first.
 
-Versioning: upstream version + `-zw.N` (`0.21.0-zw.5`: patch 5); bump `N` for new fork fixes, reset it when rebasing on a new upstream.
+Tests for 2–6 are in `src/endpoint/endpoint_test.rs` and `src/queue/queue_test.rs` (search `zenoh-web patch`).
+
+Versioning: upstream version + `-zw.N` (`0.21.0-zw.6`: patch 6); bump `N` for new fork fixes, reset it when rebasing on a new upstream.

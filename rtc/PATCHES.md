@@ -41,6 +41,9 @@ Fork of [rtc](https://crates.io/crates/rtc) 0.21.0 (webrtc-rs, MIT OR Apache-2.0
    `stop` unbinds exactly those.
 6. **Dependencies point at the forks**: `srtp` is `zenoh-web-rtc-srtp`, `sctp` is `zenoh-web-rtc-sctp`, `datachannel` is
    `zenoh-web-rtc-datachannel` (which uses the same SCTP fork, so their types match).
+7. **A data channel's send priority can be set** (`src/data_channel/mod.rs` `RTCDataChannel::set_priority`,
+   `src/peer_connection/handler/sctp.rs`). Change: a channel's DCEP priority (opened or accepted) sets its SCTP
+   stream's priority, and `set_priority` changes it (browsers open every channel at one priority; Chrome sends 0).
 
 Manifest: dev-dependencies, examples and tests removed (not vendored).
-Versioning: upstream version + `-zw.N` (`0.21.0-zw.5`: patches 3-5); bump `N` for new fork fixes, reset it when rebasing on a new upstream.
+Versioning: upstream version + `-zw.N` (`0.21.0-zw.6`: patches 3-5, 7); bump `N` for new fork fixes, reset it when rebasing on a new upstream.

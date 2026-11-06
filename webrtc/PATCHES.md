@@ -38,4 +38,7 @@ get the patched SCTP and data channel code.
    when the core removes a stopped transceiver, the wrapper drops it, unbinds its sender's track and
    drops both tracks' event senders.
 
-Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.5`: patches 3-4).
+5. **`DataChannel::set_priority`** (`src/data_channel/mod.rs`, `zenoh-web patch`): the rtc fork's channel priority,
+   so an application can put the channels it can't wait on ahead of bulk.
+
+Manifest: dev-dependencies, examples and tests removed (not vendored). Versioning: upstream version + `-zw.N` (`0.21.0-zw.6`: patches 3-5).
